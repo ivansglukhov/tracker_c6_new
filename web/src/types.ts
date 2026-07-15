@@ -7,6 +7,8 @@ export interface DeviceStatus {
   awakeElapsedSec: number
   awakeTimeSec: number
   interactiveRemainingSec: number
+  cyclePointCount: number
+  pointsBeforeSleep: number
   batteryMillivolts: number
   batteryPercent: number
   satellites: number
@@ -27,8 +29,8 @@ export interface LivePoint {
 export interface DeviceSettings {
   awakeTimeSec: number
   sleepTimeSec: number
+  pointsBeforeSleep: number
   screenOnTimerWake: boolean
-  bleOnTimerWake: boolean
   followSleepScheduleWhileBle: boolean
 }
 

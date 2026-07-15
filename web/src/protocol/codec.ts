@@ -12,6 +12,7 @@ export const Opcode = {
   getStatus: 0x01,
   getSettings: 0x02,
   setSettings: 0x03,
+  setNmeaDebug: 0x04,
   createTrack: 0x10,
   listTracks: 0x11,
   openTransfer: 0x20,
@@ -20,6 +21,7 @@ export const Opcode = {
   statusEvent: 0x40,
   livePointEvent: 0x41,
   bulkChunk: 0x42,
+  nmeaGgaEvent: 0x43,
   response: 0x7f,
 } as const
 
@@ -48,16 +50,20 @@ export function requestFrame(opcode: number, requestId: number, payload?: Uint8A
 }
 
 export function settingsPayload(settings: DeviceSettings): Uint8Array {
-  const payload = new Uint8Array(7)
+  const payload = new Uint8Array(9)
   const view = new DataView(payload.buffer)
   view.setUint16(0, settings.awakeTimeSec, true)
   view.setUint32(2, settings.sleepTimeSec, true)
+  view.setUint16(6, settings.pointsBeforeSleep, true)
   let flags = 0
   if (settings.screenOnTimerWake) flags |= 0x01
-  if (settings.bleOnTimerWake) flags |= 0x02
   if (settings.followSleepScheduleWhileBle) flags |= 0x04
-  view.setUint8(6, flags)
+  view.setUint8(8, flags)
   return payload
+}
+
+export function booleanPayload(value: boolean): Uint8Array {
+  return Uint8Array.of(value ? 1 : 0)
 }
 
 export function uint32Payload(value: number): Uint8Array {
@@ -156,20 +162,20 @@ function unpackBits(payload: Uint8Array, expectedLength: number): Uint8Array {
 }
 
 export function decodeSettings(payload: Uint8Array): DeviceSettings {
-  if (payload.byteLength !== 7) throw new Error('Некорректный пакет настроек')
+  if (payload.byteLength !== 9) throw new Error('Некорректный пакет настроек')
   const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength)
-  const flags = view.getUint8(6)
+  const flags = view.getUint8(8)
   return {
     awakeTimeSec: view.getUint16(0, true),
     sleepTimeSec: view.getUint32(2, true),
+    pointsBeforeSleep: view.getUint16(6, true),
     screenOnTimerWake: Boolean(flags & 0x01),
-    bleOnTimerWake: Boolean(flags & 0x02),
     followSleepScheduleWhileBle: Boolean(flags & 0x04),
   }
 }
 
 export function decodeStatus(value: DataView): DeviceStatus {
-  if (value.byteLength !== 32 || value.getUint8(0) !== 1 || value.getUint8(1) !== Opcode.statusEvent) {
+  if (value.byteLength !== 36 || value.getUint8(0) !== 1 || value.getUint8(1) !== Opcode.statusEvent) {
     throw new Error('Некорректный пакет статуса')
   }
   return {
@@ -181,11 +187,20 @@ export function decodeStatus(value: DataView): DeviceStatus {
     awakeElapsedSec: value.getUint16(20, true),
     awakeTimeSec: value.getUint16(22, true),
     interactiveRemainingSec: value.getUint16(24, true),
+    cyclePointCount: value.getUint16(32, true),
+    pointsBeforeSleep: value.getUint16(34, true),
     batteryPercent: value.getUint8(26),
     satellites: value.getUint8(27),
     wakeReason: value.getUint8(28),
     batteryMillivolts: value.getUint16(30, true),
   }
+}
+
+export function decodeNmeaGga(value: DataView): string {
+  if (value.byteLength < 8 || value.getUint8(0) !== 1 || value.getUint8(1) !== Opcode.nmeaGgaEvent) {
+    throw new Error('Некорректный пакет NMEA GGA')
+  }
+  return new TextDecoder('ascii').decode(new Uint8Array(value.buffer, value.byteOffset + 2, value.byteLength - 2))
 }
 
 export function decodeLivePoint(value: DataView): LivePoint {

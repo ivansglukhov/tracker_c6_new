@@ -1,6 +1,7 @@
 .pio/
 firmware/build/
 firmware/build-arduino-cli/
+firmware/build-compile-*/
 node_modules/
 dist/
 .vite/

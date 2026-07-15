@@ -5,8 +5,8 @@
 struct TrackerSettings {
   uint16_t awakeTimeSec = 120;
   uint32_t sleepTimeSec = 60;
+  uint16_t pointsBeforeSleep = 3;
   bool screenOnTimerWake = false;
-  bool bleOnTimerWake = true;
   bool followSleepScheduleWhileBle = false;
 };
 
@@ -30,6 +30,8 @@ struct DeviceStatus {
   uint16_t awakeElapsedSec = 0;
   uint16_t awakeTimeSec = 0;
   uint16_t interactiveRemainingSec = 0;
+  uint16_t cyclePointCount = 0;
+  uint16_t pointsBeforeSleep = 3;
   uint16_t batteryMillivolts = 0;
   uint8_t batteryPercent = 0;
   uint8_t satellites = 0;
@@ -38,4 +40,5 @@ struct DeviceStatus {
   bool sdReady = false;
   bool sdError = false;
   bool bleConnected = false;
+  bool usbConnected = false;
 };

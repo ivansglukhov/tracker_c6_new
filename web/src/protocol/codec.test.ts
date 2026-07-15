@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeBulkChunk, decodeLivePoint, decodeSettings, decodeStatus, Opcode, settingsPayload } from './codec'
+import { decodeBulkChunk, decodeLivePoint, decodeNmeaGga, decodeSettings, decodeStatus, Opcode, settingsPayload } from './codec'
 import { crc32 } from './crc32'
 
 describe('двоичный протокол BLE', () => {
@@ -7,23 +7,23 @@ describe('двоичный протокол BLE', () => {
     const source = {
       awakeTimeSec: 120,
       sleepTimeSec: 3600,
+      pointsBeforeSleep: 3,
       screenOnTimerWake: false,
-      bleOnTimerWake: true,
       followSleepScheduleWhileBle: true,
     }
 
     const bytes = settingsPayload(source)
 
-    expect(bytes).toHaveLength(7)
+    expect(bytes).toHaveLength(9)
     expect(decodeSettings(bytes)).toEqual(source)
   })
 
-  it('декодирует 32-байтовый статус по смещениям прошивки', () => {
-    const bytes = new Uint8Array(32)
+  it('декодирует 36-байтовый статус по смещениям прошивки', () => {
+    const bytes = new Uint8Array(36)
     const view = new DataView(bytes.buffer)
     view.setUint8(0, 1)
     view.setUint8(1, Opcode.statusEvent)
-    view.setUint16(2, 0x001d, true)
+    view.setUint16(2, 0x001f, true)
     view.setUint32(4, 42, true)
     view.setUint32(8, 1234, true)
     view.setUint32(12, 9876, true)
@@ -35,9 +35,11 @@ describe('двоичный протокол BLE', () => {
     view.setUint8(27, 9)
     view.setUint8(28, 2)
     view.setUint16(30, 3912, true)
+    view.setUint16(32, 2, true)
+    view.setUint16(34, 3, true)
 
     expect(decodeStatus(view)).toEqual({
-      flags: 0x001d,
+      flags: 0x001f,
       trackId: 42,
       pointCount: 1234,
       distanceM: 9876,
@@ -45,11 +47,23 @@ describe('двоичный протокол BLE', () => {
       awakeElapsedSec: 17,
       awakeTimeSec: 120,
       interactiveRemainingSec: 13,
+      cyclePointCount: 2,
+      pointsBeforeSleep: 3,
       batteryPercent: 84,
       batteryMillivolts: 3912,
       satellites: 9,
       wakeReason: 2,
     })
+  })
+
+  it('декодирует сервисную строку NMEA GGA', () => {
+    const sentence = '$GNGGA,123519,,,,,0,00,99.99,,,,,,*48'
+    const body = new TextEncoder().encode(sentence)
+    const bytes = new Uint8Array(body.length + 2)
+    bytes[0] = 1
+    bytes[1] = Opcode.nmeaGgaEvent
+    bytes.set(body, 2)
+    expect(decodeNmeaGga(new DataView(bytes.buffer))).toBe(sentence)
   })
 
   it('декодирует 28-байтовую GPS-точку', () => {

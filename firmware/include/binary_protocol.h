@@ -10,6 +10,7 @@ enum class Opcode : uint8_t {
   GetStatus = 0x01,
   GetSettings = 0x02,
   SetSettings = 0x03,
+  SetNmeaDebug = 0x04,
   CreateTrack = 0x10,
   ListTracks = 0x11,
   OpenTransfer = 0x20,
@@ -18,6 +19,7 @@ enum class Opcode : uint8_t {
   StatusEvent = 0x40,
   LivePointEvent = 0x41,
   BulkChunk = 0x42,
+  NmeaGgaEvent = 0x43,
   Response = 0x7F,
 };
 
@@ -40,7 +42,8 @@ struct RequestHeader {
 struct SettingsPayload {
   uint16_t awakeTimeSec;
   uint32_t sleepTimeSec;
-  uint8_t flags;  // bit0 screen timer, bit1 BLE timer, bit2 follow sleep while BLE.
+  uint16_t pointsBeforeSleep;
+  uint8_t flags;  // bit0 screen timer, bit2 follow sleep while BLE.
 };
 
 struct ListTracksRequest {
@@ -106,6 +109,8 @@ struct StatusPayload {
   uint8_t wakeReason;
   uint8_t reserved;
   uint16_t batteryMillivolts;
+  uint16_t cyclePointCount;
+  uint16_t pointsBeforeSleep;
 };
 
 struct LivePointPayload {
@@ -122,7 +127,8 @@ struct LivePointPayload {
 };
 #pragma pack(pop)
 
-static_assert(sizeof(StatusPayload) == 32, "Unexpected status payload size");
+static_assert(sizeof(SettingsPayload) == 9, "Unexpected settings payload size");
+static_assert(sizeof(StatusPayload) == 36, "Unexpected status payload size");
 static_assert(sizeof(LivePointPayload) == 28, "Unexpected live point payload size");
 static_assert(sizeof(TrackInfoPayload) == 16, "Unexpected track info payload size");
 static_assert(sizeof(OpenTransferPayload) == 16, "Unexpected open transfer payload size");

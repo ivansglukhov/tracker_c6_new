@@ -2,6 +2,7 @@
 #include <SD.h>
 #include <SPI.h>
 #include <esp_sleep.h>
+#include <soc/usb_serial_jtag_struct.h>
 
 #include "../include/binary_protocol.h"
 #include "../include/ble_service.h"
@@ -14,6 +15,8 @@
 
 namespace {
 constexpr uint32_t INTERACTIVE_WINDOW_MS = 30000;
+constexpr uint32_t POINT_STALL_TIMEOUT_MS = 30000;
+constexpr uint32_t USB_ACTIVITY_HOLD_MS = 3000;
 constexpr uint32_t STATUS_PERIOD_MS = 1000;
 constexpr uint32_t TRANSFER_RETRY_MS = 1200;
 constexpr uint8_t TRANSFER_MAX_RETRIES = 5;
@@ -35,9 +38,13 @@ bool interactiveWake = false;
 bool displayEnabled = false;
 bool bleEnabled = false;
 bool displayForcedOnly = false;
-bool bleForcedOnly = false;
 bool buttonPressedPreviously = false;
 uint32_t interactiveDeadlineMs = 0;
+uint16_t cyclePointCount = 0;
+uint32_t lastStoredPointMs = 0;
+bool nmeaDebugEnabled = false;
+uint16_t lastUsbFrame = 0;
+uint32_t lastUsbActivityMs = 0;
 
 struct TransferState {
   bool active = false;
@@ -109,7 +116,6 @@ void startInteractiveWindow() {
   }
   if (!bleEnabled) {
     bleEnabled = ble.begin();
-    bleForcedOnly = bleEnabled;
   }
 }
 
@@ -124,12 +130,15 @@ void handleButtonAndInteractiveWindow() {
     displayEnabled = false;
     displayForcedOnly = false;
   }
-  if (bleForcedOnly && bleEnabled && !ble.connected()) {
-    ble.stop();
-    bleEnabled = false;
-    bleForcedOnly = false;
-    transfer = {};
+}
+
+bool usbHostConnected() {
+  const uint16_t frame = USB_SERIAL_JTAG.fram_num.sof_frame_index;
+  if (USB_SERIAL_JTAG.bus_reset_st.usb_bus_reset_st && frame != lastUsbFrame) {
+    lastUsbFrame = frame;
+    lastUsbActivityMs = millis();
   }
+  return lastUsbActivityMs != 0 && millis() - lastUsbActivityMs < USB_ACTIVITY_HOLD_MS;
 }
 
 BatteryReading readBattery() {
@@ -157,12 +166,15 @@ void refreshStatus() {
   const uint32_t waitSeconds = (millis() - bootMs) / 1000;
   status.awakeElapsedSec = static_cast<uint16_t>(waitSeconds > 65535 ? 65535 : waitSeconds);
   status.awakeTimeSec = settings.awakeTimeSec;
+  status.cyclePointCount = cyclePointCount;
+  status.pointsBeforeSleep = settings.pointsBeforeSleep;
   const BatteryReading battery = readBattery();
   status.batteryMillivolts = battery.millivolts;
   status.batteryPercent = battery.percent;
   status.sdReady = trackStore.ready();
   status.sdError = trackStore.writeError();
   status.bleConnected = ble.connected();
+  status.usbConnected = usbHostConnected();
   if (interactiveWindowActive()) {
     status.interactiveRemainingSec = static_cast<uint16_t>((interactiveDeadlineMs - millis() + 999) / 1000);
   } else {
@@ -188,8 +200,8 @@ void handleCommand(const BleCommandFrame &frame) {
     protocol::SettingsPayload payload{};
     payload.awakeTimeSec = settings.awakeTimeSec;
     payload.sleepTimeSec = settings.sleepTimeSec;
+    payload.pointsBeforeSleep = settings.pointsBeforeSleep;
     if (settings.screenOnTimerWake) payload.flags |= 0x01;
-    if (settings.bleOnTimerWake) payload.flags |= 0x02;
     if (settings.followSleepScheduleWhileBle) payload.flags |= 0x04;
     ble.respond(header.requestId, protocol::Result::Ok, &payload, sizeof(payload));
   } else if (opcode == protocol::Opcode::SetSettings) {
@@ -200,18 +212,26 @@ void handleCommand(const BleCommandFrame &frame) {
     protocol::SettingsPayload payload{};
     memcpy(&payload, frame.bytes + sizeof(header), sizeof(payload));
     if (payload.awakeTimeSec < 1 || payload.awakeTimeSec > 3600 ||
-        payload.sleepTimeSec < 5 || payload.sleepTimeSec > 86400) {
+        payload.sleepTimeSec < 5 || payload.sleepTimeSec > 86400 ||
+        payload.pointsBeforeSleep < 1 || payload.pointsBeforeSleep > 1000) {
       ble.respond(header.requestId, protocol::Result::InvalidValue);
       return;
     }
     settings.awakeTimeSec = payload.awakeTimeSec;
     settings.sleepTimeSec = payload.sleepTimeSec;
+    settings.pointsBeforeSleep = payload.pointsBeforeSleep;
     settings.screenOnTimerWake = payload.flags & 0x01;
-    settings.bleOnTimerWake = payload.flags & 0x02;
     settings.followSleepScheduleWhileBle = payload.flags & 0x04;
     trackStore.setSchedule(settings.awakeTimeSec, settings.sleepTimeSec);
     ble.respond(header.requestId,
                 settingsStore.save(settings) ? protocol::Result::Ok : protocol::Result::StorageError);
+  } else if (opcode == protocol::Opcode::SetNmeaDebug) {
+    if (frame.length != sizeof(header) + 1) {
+      ble.respond(header.requestId, protocol::Result::InvalidFrame);
+      return;
+    }
+    nmeaDebugEnabled = frame.bytes[sizeof(header)] != 0;
+    ble.respond(header.requestId, protocol::Result::Ok);
   } else if (opcode == protocol::Opcode::CreateTrack) {
     ble.respond(header.requestId,
                 trackStore.createNext(lastGpsEpoch) ? protocol::Result::Ok : protocol::Result::StorageError);
@@ -334,6 +354,7 @@ void serviceTransfer() {
 
 void enterDeepSleep() {
   if (digitalRead(board::WAKE_BUTTON) == LOW) return;
+  if (usbHostConnected()) return;
   refreshStatus();
   trackStore.appendBattery(lastGpsEpoch, wakeCycleId,
                            status.batteryMillivolts, status.batteryPercent);
@@ -348,10 +369,12 @@ void enterDeepSleep() {
 }
 
 bool sleepAllowed() {
-  if (millis() - bootMs < settings.awakeTimeSec * 1000UL) return false;
+  if (usbHostConnected()) return false;
   if (interactiveWindowActive()) return false;
   if (ble.connected() && !settings.followSleepScheduleWhileBle) return false;
-  return true;
+  if (cyclePointCount == 0) return millis() - bootMs >= settings.awakeTimeSec * 1000UL;
+  if (cyclePointCount >= settings.pointsBeforeSleep) return true;
+  return millis() - lastStoredPointMs >= POINT_STALL_TIMEOUT_MS;
 }
 }
 
@@ -363,6 +386,7 @@ void setup() {
   if (wakeCycleId == 0) ++wakeCycleId;
 
   pinMode(board::WAKE_BUTTON, INPUT);
+  lastUsbFrame = USB_SERIAL_JTAG.fram_num.sof_frame_index;
   analogReadResolution(12);
   analogSetPinAttenuation(board::BATTERY_ADC, ADC_11db);
   const esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
@@ -373,15 +397,13 @@ void setup() {
   settingsStore.begin();
   settings = settingsStore.get();
   displayEnabled = interactiveWake || settings.screenOnTimerWake;
-  bleEnabled = interactiveWake || settings.bleOnTimerWake;
   displayForcedOnly = interactiveWake;
-  bleForcedOnly = interactiveWake;
   if (interactiveWake) interactiveDeadlineMs = millis() + INTERACTIVE_WINDOW_MS;
 
   if (displayEnabled) display.begin();
   trackStore.begin(settings.awakeTimeSec, settings.sleepTimeSec);
   gps.begin();
-  if (bleEnabled) ble.begin();
+  bleEnabled = ble.begin();
   refreshStatus();
   Serial.printf("C6 Tracker v2: wake=%u track=%lu SD=%u\n", status.wakeReason,
                 static_cast<unsigned long>(trackStore.trackId()), trackStore.ready());
@@ -394,6 +416,8 @@ void loop() {
     if (point.epoch) lastGpsEpoch = point.epoch;
     if (trackStore.append(point, wakeCycleId,
                           status.batteryMillivolts, status.batteryPercent)) {
+      if (cyclePointCount < UINT16_MAX) ++cyclePointCount;
+      lastStoredPointMs = millis();
       status.gpsCoordinate = true;
       status.altitudeM = point.altitudeCm / 100;
       status.satellites = point.satellites;
@@ -401,6 +425,15 @@ void loop() {
     }
     refreshStatus();
   }
+
+  char gga[128] = {};
+  size_t ggaLength = 0;
+  if (gps.takeGga(gga, sizeof(gga), ggaLength) &&
+      nmeaDebugEnabled && bleEnabled && ble.connected()) {
+    ble.notifyNmeaGga(gga, ggaLength);
+  }
+
+  if (nmeaDebugEnabled && !ble.connected()) nmeaDebugEnabled = false;
 
   BleCommandFrame command{};
   while (bleEnabled && ble.pop(command)) handleCommand(command);

@@ -85,6 +85,7 @@ void BleService::notifyStatus(const DeviceStatus &status) {
   if (status.sdReady) payload.flags |= 0x0002;
   if (status.sdError) payload.flags |= 0x0004;
   if (status.bleConnected) payload.flags |= 0x0008;
+  if (status.usbConnected) payload.flags |= 0x0010;
   payload.trackId = status.trackId;
   payload.pointCount = status.pointCount;
   payload.distanceM = status.distanceM;
@@ -96,8 +97,20 @@ void BleService::notifyStatus(const DeviceStatus &status) {
   payload.batteryMillivolts = status.batteryMillivolts;
   payload.satellites = status.satellites;
   payload.wakeReason = status.wakeReason;
+  payload.cyclePointCount = status.cyclePointCount;
+  payload.pointsBeforeSleep = status.pointsBeforeSleep;
   eventCharacteristic_->setValue(reinterpret_cast<uint8_t *>(&payload), sizeof(payload));
   if (connected_) eventCharacteristic_->notify();
+}
+
+void BleService::notifyNmeaGga(const char *sentence, size_t length) {
+  if (!eventCharacteristic_ || !connected_ || !sentence || length == 0 || length > 180) return;
+  uint8_t frame[182] = {};
+  frame[0] = protocol::VERSION;
+  frame[1] = static_cast<uint8_t>(protocol::Opcode::NmeaGgaEvent);
+  memcpy(frame + 2, sentence, length);
+  eventCharacteristic_->setValue(frame, length + 2);
+  eventCharacteristic_->notify();
 }
 
 void BleService::notifyPoint(uint32_t trackId, uint32_t sampleId, const GpsPoint &point) {

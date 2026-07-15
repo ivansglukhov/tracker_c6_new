@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { BleClient } from './ble/BleClient'
 import ConnectionHeader from './components/ConnectionHeader.vue'
 import FiltersPage from './components/FiltersPage.vue'
 import MapTracksPage from './components/MapTracksPage.vue'
 import NowPage from './components/NowPage.vue'
 import SettingsPage from './components/SettingsPage.vue'
+import { saveTextDownload } from './platform/downloads'
 import { appendTrackBlock, listStoredTracks, mergeRemoteTracks, readTrackFile } from './storage/trackDatabase'
 import { parseC6t } from './track/c6t'
 import { trackToGeoJson, trackToGpx } from './track/export'
@@ -20,8 +21,8 @@ const BATTERY_HISTORY_KEY = 'c6-battery-history-v2'
 const DEFAULT_SETTINGS: DeviceSettings = {
   awakeTimeSec: 120,
   sleepTimeSec: 60,
+  pointsBeforeSleep: 3,
   screenOnTimerWake: false,
-  bleOnTimerWake: true,
   followSleepScheduleWhileBle: false,
 }
 
@@ -56,19 +57,37 @@ const syncProgress = ref(0)
 const history = ref<TrackPoint[]>([])
 const filterSettings = ref<TrackFilterSettings>({ minSatellites: 0, maxHdop: 0, maxJumpM: 0 })
 const batterySamples = ref<BatterySample[]>(loadBatteryHistory())
+const nmeaEnabled = ref(false)
+const nmeaGga = ref('')
+const nmeaUpdatedAt = ref<number>()
+const exportNotice = ref('')
+let currentSyncTimer: number | undefined
+let currentSyncRunning = false
 
 client.setAutoReconnect(autoReconnect.value)
 
 client.onConnection = (value) => {
   connected.value = value
   if (value) void refreshAfterConnection()
+  else {
+    nmeaEnabled.value = false
+    if (currentSyncTimer != null) window.clearTimeout(currentSyncTimer)
+    currentSyncTimer = undefined
+  }
 }
 client.onConnectionState = (value) => { connectionMessage.value = value }
 client.onStatus = (value) => {
   status.value = value
   recordLiveBattery(value)
 }
-client.onPoint = (value) => { point.value = value }
+client.onPoint = (value) => {
+  point.value = value
+  scheduleCurrentSync()
+}
+client.onNmeaGga = (value) => {
+  nmeaGga.value = value
+  nmeaUpdatedAt.value = Date.now()
+}
 
 async function connect(): Promise<void> {
   busy.value = true
@@ -91,7 +110,7 @@ async function refreshAfterConnection(): Promise<void> {
     }
     settings.value = await client.getSettings()
     settingsConfirmed.value = true
-    await refreshTracks()
+    await refreshTracksAndCurrent()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason)
   }
@@ -126,18 +145,42 @@ async function createTrack(): Promise<void> {
   if (!confirm('Закрыть текущий файл и создать новый трек?')) return
   try {
     await client.createTrack()
-    await refreshTracks()
+    await refreshTracksAndCurrent()
   }
   catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason) }
 }
 
 async function refreshTracks(): Promise<void> {
+  remoteTracks.value = await client.listTracks()
+  storedTracks.value = (await mergeRemoteTracks(remoteTracks.value)).sort((a, b) => b.trackId - a.trackId)
+}
+
+async function refreshTracksAndCurrent(): Promise<void> {
+  if (!connected.value || currentSyncRunning) return
+  currentSyncRunning = true
   try {
-    remoteTracks.value = await client.listTracks()
-    storedTracks.value = (await mergeRemoteTracks(remoteTracks.value)).sort((a, b) => b.trackId - a.trackId)
+    await refreshTracks()
+    const current = remoteTracks.value.find((track) => track.current)
+    if (!current) return
+    const local = storedTracks.value.find((track) => track.trackId === current.trackId)
+    if (local?.bytesReceived === current.fileSize) return
+    busyTrackId.value = current.trackId
+    await downloadTrackSnapshot(current)
+    await refreshTracks()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason)
+  } finally {
+    busyTrackId.value = undefined
+    currentSyncRunning = false
   }
+}
+
+function scheduleCurrentSync(): void {
+  if (!connected.value || currentSyncTimer != null) return
+  currentSyncTimer = window.setTimeout(() => {
+    currentSyncTimer = undefined
+    void refreshTracksAndCurrent()
+  }, 15_000)
 }
 
 async function downloadTrackSnapshot(info: RemoteTrackInfo): Promise<void> {
@@ -148,6 +191,17 @@ async function downloadTrackSnapshot(info: RemoteTrackInfo): Promise<void> {
   await client.downloadTrack(info, syncProgress.value, async (offset, data, fileSize) => {
     await appendTrackBlock(info.trackId, offset, data, fileSize)
     syncProgress.value = offset + data.byteLength
+    const index = storedTracks.value.findIndex((track) => track.trackId === info.trackId)
+    if (index >= 0) {
+      storedTracks.value[index] = {
+        ...storedTracks.value[index],
+        fileSize,
+        bytesReceived: syncProgress.value,
+        updatedAt: Date.now(),
+      }
+    }
+    const remoteIndex = remoteTracks.value.findIndex((track) => track.trackId === info.trackId)
+    if (remoteIndex >= 0) remoteTracks.value[remoteIndex] = { ...remoteTracks.value[remoteIndex], fileSize }
   })
   storedTracks.value = await listStoredTracks()
 }
@@ -191,19 +245,31 @@ async function exportTrackFile(info: RemoteTrackInfo, format: 'gpx' | 'geojson')
     mergeBatteryHistory(parsed.batterySamples.map((sample) => ({ ...sample, trackId: info.trackId })))
     const basename = `track_${String(info.trackId).padStart(6, '0')}`
     const content = format === 'gpx' ? trackToGpx(points, basename) : trackToGeoJson(points, info.trackId)
-    const blob = new Blob([content], { type: format === 'gpx' ? 'application/gpx+xml' : 'application/geo+json' })
-    const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `${basename}.${format === 'gpx' ? 'gpx' : 'geojson'}`
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    const extension = format === 'gpx' ? 'gpx' : 'geojson'
+    exportNotice.value = await saveTextDownload(
+      `${basename}.${extension}`,
+      format === 'gpx' ? 'application/gpx+xml' : 'application/geo+json',
+      content,
+    )
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason)
   } finally {
     busyTrackId.value = undefined
+  }
+}
+
+async function toggleNmea(enabled: boolean): Promise<void> {
+  error.value = ''
+  try {
+    await client.setNmeaDebug(enabled)
+    nmeaEnabled.value = enabled
+    if (!enabled) {
+      nmeaGga.value = ''
+      nmeaUpdatedAt.value = undefined
+    }
+  } catch (reason) {
+    nmeaEnabled.value = false
+    error.value = reason instanceof Error ? reason.message : String(reason)
   }
 }
 
@@ -287,6 +353,10 @@ onMounted(async () => {
     error.value = reason instanceof Error ? reason.message : String(reason)
   })
 })
+
+onBeforeUnmount(() => {
+  if (currentSyncTimer != null) window.clearTimeout(currentSyncTimer)
+})
 </script>
 
 <template>
@@ -302,7 +372,16 @@ onMounted(async () => {
       <button v-for="item in tabs" :key="item.id" :class="{ active: tab === item.id }" @click="tab = item.id">{{ item.label }}</button>
     </nav>
     <p v-if="error" class="error">{{ error }}</p>
-    <NowPage v-if="tab === 'now'" :status="status" :point="point" />
+    <NowPage
+      v-if="tab === 'now'"
+      :status="status"
+      :point="point"
+      :connected="connected"
+      :nmea-enabled="nmeaEnabled"
+      :nmea-gga="nmeaGga"
+      :nmea-updated-at="nmeaUpdatedAt"
+      @nmea="toggleNmea"
+    />
     <MapTracksPage
       v-else-if="tab === 'map'"
       :point="point"
@@ -314,8 +393,9 @@ onMounted(async () => {
       :stored-tracks="storedTracks"
       :busy-track-id="busyTrackId"
       :progress="syncProgress"
+      :notice="exportNotice"
       @create="createTrack"
-      @refresh="refreshTracks"
+      @refresh="refreshTracksAndCurrent"
       @sync="syncTrack"
       @view="viewTrack"
       @export="exportTrackFile"

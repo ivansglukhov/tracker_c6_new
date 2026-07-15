@@ -41,11 +41,49 @@ void UbloxGps::prepareForDeepSleep() {
   payload[8] = 0x06;   // backup + force minimum consumption
   payload[12] = 0x08;  // wake on UART RX edge
   sendUbx(0x02, 0x41, payload, sizeof(payload));
-  delay(100);
-  serial_.end();
+  delay(20);
+  // UART TX already idles HIGH. Switch it to a held GPIO before ending the
+  // peripheral so detaching UART cannot create an edge that wakes the M10.
   pinMode(board::GPS_TX, OUTPUT);
   digitalWrite(board::GPS_TX, HIGH);
   gpio_hold_en(static_cast<gpio_num_t>(board::GPS_TX));
+  serial_.end();
+}
+
+void UbloxGps::captureNmea(char value) {
+  if (value == '$') {
+    sentenceLength_ = 0;
+    capturingSentence_ = true;
+  }
+  if (!capturingSentence_) return;
+  if (value == '\r') return;
+  if (value == '\n') {
+    sentence_[sentenceLength_] = '\0';
+    if (sentenceLength_ >= 6 && strstr(sentence_, "GGA,") != nullptr) {
+      latestGgaLength_ = sentenceLength_;
+      memcpy(latestGga_, sentence_, latestGgaLength_ + 1);
+      ggaReady_ = true;
+    }
+    sentenceLength_ = 0;
+    capturingSentence_ = false;
+    return;
+  }
+  if (sentenceLength_ + 1 >= sizeof(sentence_)) {
+    sentenceLength_ = 0;
+    capturingSentence_ = false;
+    return;
+  }
+  sentence_[sentenceLength_++] = value;
+}
+
+bool UbloxGps::takeGga(char *output, size_t capacity, size_t &length) {
+  length = 0;
+  if (!output || capacity == 0 || !ggaReady_) return false;
+  length = latestGgaLength_ < capacity - 1 ? latestGgaLength_ : capacity - 1;
+  memcpy(output, latestGga_, length);
+  output[length] = '\0';
+  ggaReady_ = false;
+  return true;
 }
 
 int64_t UbloxGps::daysFromCivil(int year, unsigned month, unsigned day) {
@@ -73,7 +111,10 @@ uint32_t UbloxGps::timeKey() {
 }
 
 void UbloxGps::updateCandidate() {
-  if (!parser_.location.isValid()) return;
+  // TinyGPSPlus keeps the last valid coordinate after fix loss. Accept only a
+  // location committed by the sentence that has just completed, otherwise a
+  // changing NMEA time could turn the stale coordinate into new track points.
+  if (!parser_.location.isValid() || parser_.location.age() > 250) return;
   const uint32_t key = timeKey();
   if (key == 0 || key == emittedKey_) return;
   candidateKey_ = key;
@@ -98,7 +139,9 @@ void UbloxGps::updateCandidate() {
 
 bool UbloxGps::poll(GpsPoint &point) {
   while (serial_.available()) {
-    if (parser_.encode(static_cast<char>(serial_.read()))) updateCandidate();
+    const char value = static_cast<char>(serial_.read());
+    captureNmea(value);
+    if (parser_.encode(value)) updateCandidate();
   }
   if (!candidateReady_ || millis() - candidateUpdatedMs_ < 250) return false;
   point = candidate_;

@@ -21,10 +21,10 @@ export default defineConfig({
       workbox: {
         navigateFallback: 'index.html',
         runtimeCaching: [{
-          urlPattern: /^https:\/\/tile\.openstreetmap\.org\//,
+          urlPattern: /^https:\/\/(?:tile\.openstreetmap\.org|[abc]\.tile-cyclosm\.openstreetmap\.fr|[abcd]\.basemaps\.cartocdn\.com)\//,
           handler: 'CacheFirst',
           options: {
-            cacheName: 'osm-viewed-tiles',
+            cacheName: 'map-viewed-tiles',
             expiration: { maxEntries: 1200, maxAgeSeconds: 7 * 24 * 60 * 60 },
             cacheableResponse: { statuses: [0, 200] },
           },

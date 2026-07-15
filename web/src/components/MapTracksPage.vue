@@ -11,6 +11,32 @@ interface MapDisplaySettings {
   labelFields: Record<string, boolean>
 }
 
+type BasemapId = 'osm' | 'cyclosm' | 'dark_matter' | 'positron'
+
+const BASEMAP_KEY = 'c6-map-basemap'
+const BASEMAPS: Record<BasemapId, { label: string; url: string; options: L.TileLayerOptions }> = {
+  osm: {
+    label: 'OpenStreetMap',
+    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    options: { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' },
+  },
+  cyclosm: {
+    label: 'CyclOSM',
+    url: 'https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png',
+    options: { maxZoom: 20, attribution: '&copy; OpenStreetMap contributors · CyclOSM' },
+  },
+  dark_matter: {
+    label: 'CARTO Dark Matter',
+    url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    options: { maxZoom: 20, subdomains: 'abcd', attribution: '&copy; OpenStreetMap contributors · &copy; CARTO' },
+  },
+  positron: {
+    label: 'CARTO Positron',
+    url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+    options: { maxZoom: 20, subdomains: 'abcd', attribution: '&copy; OpenStreetMap contributors · &copy; CARTO' },
+  },
+}
+
 const DISPLAY_KEY = 'c6-map-display-v2'
 const props = defineProps<{
   point?: LivePoint
@@ -22,6 +48,7 @@ const props = defineProps<{
   storedTracks: StoredTrack[]
   busyTrackId?: number
   progress?: number
+  notice?: string
 }>()
 
 const emit = defineEmits<{
@@ -42,7 +69,10 @@ const selectedTrackId = ref(Number(localStorage.getItem('c6-map-track-id') || 0)
 const fallbackFullscreen = ref(false)
 const isFullscreen = ref(false)
 const display = reactive<MapDisplaySettings>(loadDisplaySettings())
+const savedBasemap = localStorage.getItem(BASEMAP_KEY)
+const basemapId = ref<BasemapId>(savedBasemap && savedBasemap in BASEMAPS ? savedBasemap as BasemapId : 'osm')
 let map: L.Map | undefined
+let basemapLayer: L.TileLayer | undefined
 let guidanceLayer: L.LayerGroup | undefined
 let trackLine: L.Polyline | undefined
 let trackPointsLayer: L.LayerGroup | undefined
@@ -105,13 +135,13 @@ function renderTrack(fit = false): void {
   trackLine = undefined
   trackPointsLayer?.remove()
   trackPointsLayer = L.layerGroup().addTo(map)
-  if (display.line && coordinates.length) trackLine = L.polyline(coordinates, { color: '#3c8cff', weight: 3 }).addTo(map)
+  if (display.line && coordinates.length) trackLine = L.polyline(coordinates, { color: '#14569e', weight: 3 }).addTo(map)
   if (display.points) {
     const bounds = map.getBounds()
     const allowLabels = display.labels && map.getZoom() >= 13
     props.history.forEach((point, index) => {
       const coordinate: L.LatLngTuple = [point.latitude, point.longitude]
-      const marker = L.circleMarker(coordinate, { radius: 3.5, weight: 1, color: '#8fc2ff', fillOpacity: 0.75 })
+      const marker = L.circleMarker(coordinate, { radius: 3.5, weight: 1.5, color: '#d32f2f', fillColor: '#14569e', fillOpacity: 1 })
         .addTo(trackPointsLayer!)
       if (allowLabels && bounds.contains(coordinate)) {
         marker.bindTooltip(pointLabel(point, index), { permanent: true, direction: 'right', className: 'track-label' })
@@ -199,6 +229,26 @@ function size(value: number): string {
   return value < 1024 ? `${value} Б` : `${(value / 1024).toFixed(1)} КиБ`
 }
 
+function downloadedBytes(track: RemoteTrackInfo): number {
+  return props.busyTrackId === track.trackId ? props.progress ?? 0 : local(track.trackId)?.bytesReceived ?? 0
+}
+
+function trackState(track: RemoteTrackInfo): string {
+  const downloaded = downloadedBytes(track)
+  if (downloaded === track.fileSize) return track.current ? '✓ синхронизирован · текущий' : '✓ загружен'
+  if (downloaded === 0) return track.current ? '↻ текущий · не загружен' : '↓ не загружен'
+  return track.current ? '↻ текущий · есть обновление' : '◐ загружен частично'
+}
+
+function applyBasemap(): void {
+  if (!map) return
+  basemapLayer?.remove()
+  const selected = BASEMAPS[basemapId.value]
+  basemapLayer = L.tileLayer(selected.url, selected.options).addTo(map)
+  basemapLayer.bringToBack()
+  localStorage.setItem(BASEMAP_KEY, basemapId.value)
+}
+
 async function toggleFullscreen(): Promise<void> {
   if (fallbackFullscreen.value) {
     fallbackFullscreen.value = false
@@ -229,14 +279,12 @@ watch(display, () => {
   renderTrack(false)
 }, { deep: true })
 watch(radiusM, (value) => localStorage.setItem('c6-guidance-radius', String(value)))
+watch(basemapId, applyBasemap)
 
 onMounted(async () => {
   await nextTick()
   map = L.map(mapElement.value!, { zoomControl: true }).setView([55.75, 37.62], 5)
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '&copy; OpenStreetMap contributors',
-  }).addTo(map)
+  applyBasemap()
   map.on('zoomend moveend', () => { if (display.points && display.labels) renderTrack(false) })
   document.addEventListener('fullscreenchange', fullscreenChanged)
   renderTrack(Boolean(props.history.length))
@@ -267,6 +315,11 @@ onBeforeUnmount(() => {
 
     <section class="panel map-display-settings">
       <h2>Отображение трека</h2>
+      <label class="basemap-picker">Подложка
+        <select v-model="basemapId">
+          <option v-for="(entry, id) in BASEMAPS" :key="id" :value="id">{{ entry.label }}</option>
+        </select>
+      </label>
       <label class="check"><input v-model="display.line" type="checkbox">Линия</label>
       <label class="check"><input v-model="display.points" type="checkbox">Точки</label>
       <label class="check"><input v-model="display.labels" type="checkbox" :disabled="!display.points">Подписи рядом с точками</label>
@@ -293,12 +346,12 @@ onBeforeUnmount(() => {
         <select v-model.number="selectedTrackId" @change="selectTrack">
           <option :value="0">Не выбран</option>
           <option v-for="track in displayedTracks" :key="track.trackId" :value="track.trackId">
-            track_{{ String(track.trackId).padStart(6, '0') }}.c6t{{ track.current ? ' · текущий' : '' }}
+            track_{{ String(track.trackId).padStart(6, '0') }}.c6t · {{ trackState(track) }}
           </option>
         </select>
       </label>
       <p v-if="selectedTrack" class="hint">
-        На телефоне: {{ size(local(selectedTrack.trackId)?.bytesReceived ?? 0) }} / {{ size(selectedTrack.fileSize) }}
+        На телефоне: {{ size(downloadedBytes(selectedTrack)) }} / {{ size(selectedTrack.fileSize) }} · {{ trackState(selectedTrack) }}
       </p>
       <progress v-if="busyTrackId === selectedTrackId" :value="progress ?? 0" :max="selectedTrack?.fileSize ?? 1"></progress>
       <div class="actions">
@@ -308,6 +361,7 @@ onBeforeUnmount(() => {
         <button :disabled="!selectedTrack || busyTrackId != null" @click="selectedTrack && $emit('export', selectedTrack, 'gpx')">Скачать GPX</button>
         <button :disabled="!selectedTrack || busyTrackId != null" @click="selectedTrack && $emit('export', selectedTrack, 'geojson')">Скачать GeoJSON</button>
       </div>
+      <p v-if="notice" class="download-notice">{{ notice }}</p>
       <p class="hint">Текущий файл: track_{{ String(trackId ?? 0).padStart(6, '0') }}.c6t · {{ pointCount ?? 0 }} GPS-точек.</p>
     </section>
   </section>

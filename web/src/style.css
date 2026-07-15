@@ -99,8 +99,16 @@ input[type='number'], input[type='file'], select {
 .map-overlay-tools button { min-height: 40px; background: rgba(17, 23, 19, .94); }
 .map-shell:fullscreen, .map-shell.fallback-fullscreen { position: fixed; z-index: 5000; inset: 0; width: 100vw; height: 100vh; height: 100dvh; border: 0; border-radius: 0; }
 .map-shell:fullscreen .map, .map-shell.fallback-fullscreen .map { width: 100%; height: 100%; min-height: 100%; }
+.map-shell:fullscreen .map-overlay-tools, .map-shell.fallback-fullscreen .map-overlay-tools {
+  top: max(58px, calc(env(safe-area-inset-top) + 16px));
+  right: max(10px, env(safe-area-inset-right));
+}
+.map-shell:fullscreen .leaflet-top, .map-shell.fallback-fullscreen .leaflet-top {
+  top: max(48px, calc(env(safe-area-inset-top) + 6px));
+}
 .map-display-settings { display: grid; grid-template-columns: repeat(3, minmax(0, auto)); align-items: start; gap: 8px 18px; }
-.map-display-settings h2, .map-display-settings .hint, .label-fields { grid-column: 1 / -1; }
+.map-display-settings h2, .map-display-settings .hint, .label-fields, .basemap-picker { grid-column: 1 / -1; }
+.basemap-picker { display: grid; max-width: 360px; gap: 6px; }
 .map-display-settings h2, .guidance-tools h2, .track-picker h2 { margin: 0; }
 .label-fields { display: flex; flex-wrap: wrap; gap: 4px 16px; padding-top: 4px; border-top: 1px solid #27382f; }
 .guidance-tools { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(140px, .35fr) auto; align-items: end; gap: 10px; }
@@ -120,6 +128,11 @@ input[type='number'], input[type='file'], select {
 .track-row strong { overflow-wrap: anywhere; }
 .track-row span { color: #9eaaa1; font-size: .9rem; }
 progress { width: 100%; accent-color: #79dc7f; }
+.download-notice { margin: 0; padding: 10px; color: #bdebc1; border: 1px solid #385245; border-radius: 8px; background: #0d130f; }
+.nmea-panel { display: grid; gap: 8px; margin-top: 12px; }
+.nmea-panel p { margin: 0; }
+.nmea-line { display: block; padding: 10px; overflow-wrap: anywhere; white-space: pre-wrap; color: #bdebc1; border-radius: 7px; background: #0a0d0b; }
+.nmea-state { color: #79dc7f; }
 
 @media (max-width: 600px) {
   .app {

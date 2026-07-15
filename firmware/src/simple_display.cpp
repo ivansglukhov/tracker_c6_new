@@ -86,6 +86,7 @@ bool SimpleDisplay::begin() {
   ledcAttach(board::LCD_BL, 5000, 10);
   ledcWrite(board::LCD_BL, 680);
   ready_ = true;
+  firstUpdate_ = true;
   drawStatic();
   return true;
 }
@@ -105,7 +106,8 @@ void SimpleDisplay::drawStatic() {
   lcd.drawFastHLine(6, 28, 308, GREY);
   lcd.setCursor(8, 42);
   lcd.print("DISTANCE");
-  lcd.setCursor(8, 137);
+  lcd.setTextSize(2);
+  lcd.setCursor(8, 133);
   lcd.print("ALT");
 }
 
@@ -136,14 +138,12 @@ void SimpleDisplay::update(const DeviceStatus &status) {
   }
   if (firstUpdate_ || previous_.altitudeM != status.altitudeM) {
     snprintf(text, sizeof(text), "%ld m", static_cast<long>(status.altitudeM));
-    field(45, 128, 150, 35, GREEN, 3, text);
+    field(58, 128, 140, 38, GREEN, 3, text);
   }
   if (firstUpdate_ || previous_.interactiveRemainingSec != status.interactiveRemainingSec ||
       previous_.bleConnected != status.bleConnected) {
-    if (status.bleConnected) snprintf(text, sizeof(text), "BT CONNECTED");
-    else if (status.interactiveRemainingSec) snprintf(text, sizeof(text), "BT %us", status.interactiveRemainingSec);
-    else snprintf(text, sizeof(text), "BT OFF");
-    field(202, 137, 110, 18, status.bleConnected ? GREEN : GREY, 1, text);
+    snprintf(text, sizeof(text), status.bleConnected ? "BT LINK" : "BT ON");
+    field(202, 132, 112, 30, status.bleConnected ? GREEN : YELLOW, 2, text);
   }
   previous_ = status;
   firstUpdate_ = false;

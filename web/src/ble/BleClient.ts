@@ -3,9 +3,11 @@ import { Capacitor } from '@capacitor/core'
 import {
   Opcode,
   UUID,
+  booleanPayload,
   cancelTransferPayload,
   decodeBulkChunk,
   decodeLivePoint,
+  decodeNmeaGga,
   decodeOpenTransfer,
   decodeSettings,
   decodeStatus,
@@ -55,6 +57,7 @@ export class BleClient {
 
   onStatus?: (status: DeviceStatus) => void
   onPoint?: (point: LivePoint) => void
+  onNmeaGga?: (sentence: string) => void
   onConnection?: (connected: boolean) => void
   onConnectionState?: (message: string) => void
 
@@ -190,6 +193,10 @@ export class BleClient {
     await this.request(Opcode.setSettings, settingsPayload(settings))
   }
 
+  async setNmeaDebug(enabled: boolean): Promise<void> {
+    await this.request(Opcode.setNmeaDebug, booleanPayload(enabled))
+  }
+
   async createTrack(): Promise<void> {
     await this.request(Opcode.createTrack)
   }
@@ -268,6 +275,7 @@ export class BleClient {
     const opcode = value.getUint8(1)
     if (opcode === Opcode.statusEvent) this.onStatus?.(decodeStatus(value))
     else if (opcode === Opcode.livePointEvent) this.onPoint?.(decodeLivePoint(value))
+    else if (opcode === Opcode.nmeaGgaEvent) this.onNmeaGga?.(decodeNmeaGga(value))
     else if (opcode === Opcode.response && value.byteLength >= 6) {
       const requestId = value.getUint16(2, true)
       const result = value.getUint8(4)

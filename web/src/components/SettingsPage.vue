@@ -12,17 +12,17 @@ interface SettingsProfile {
 const CUSTOM_PROFILES_KEY = 'c6-settings-profiles'
 const BUILTIN_PROFILES: Record<string, SettingsProfile> = {
   'Пешком': {
-    device: { awakeTimeSec: 180, sleepTimeSec: 120, screenOnTimerWake: false, bleOnTimerWake: true, followSleepScheduleWhileBle: true },
+    device: { awakeTimeSec: 180, sleepTimeSec: 120, pointsBeforeSleep: 3, screenOnTimerWake: false, followSleepScheduleWhileBle: true },
     filters: { minSatellites: 0, maxHdop: 0, maxJumpM: 0 },
     autoReconnect: true,
   },
   'Авто': {
-    device: { awakeTimeSec: 180, sleepTimeSec: 10, screenOnTimerWake: false, bleOnTimerWake: true, followSleepScheduleWhileBle: true },
+    device: { awakeTimeSec: 180, sleepTimeSec: 10, pointsBeforeSleep: 3, screenOnTimerWake: false, followSleepScheduleWhileBle: true },
     filters: { minSatellites: 4, maxHdop: 5, maxJumpM: 1000 },
     autoReconnect: true,
   },
   'Эконом': {
-    device: { awakeTimeSec: 60, sleepTimeSec: 3600, screenOnTimerWake: false, bleOnTimerWake: true, followSleepScheduleWhileBle: false },
+    device: { awakeTimeSec: 60, sleepTimeSec: 3600, pointsBeforeSleep: 3, screenOnTimerWake: false, followSleepScheduleWhileBle: false },
     filters: { minSatellites: 0, maxHdop: 0, maxJumpM: 0 },
     autoReconnect: true,
   },
@@ -54,7 +54,11 @@ watch(() => props.autoReconnect, (value) => { reconnect.value = value })
 function loadCustomProfiles(): Record<string, SettingsProfile> {
   try {
     const value = JSON.parse(localStorage.getItem(CUSTOM_PROFILES_KEY) || '{}') as Record<string, SettingsProfile>
-    return value && typeof value === 'object' ? value : {}
+    if (!value || typeof value !== 'object') return {}
+    return Object.fromEntries(Object.entries(value).map(([name, profile]) => [name, {
+      ...profile,
+      device: { ...profile.device, pointsBeforeSleep: Number(profile.device?.pointsBeforeSleep) || 3 },
+    }]))
   } catch {
     localStorage.removeItem(CUSTOM_PROFILES_KEY)
     return {}
@@ -112,10 +116,11 @@ function deleteProfile(): void {
       <section class="settings-summary">
         <h3>{{ confirmed && !pending ? 'Настройки, подтверждённые трекером' : 'Действующие настройки на телефоне' }}</h3>
         <ul>
-          <li>Бодрствование: {{ device.awakeTimeSec }} с</li>
+          <li>Ожидание первой GPS-точки: {{ device.awakeTimeSec }} с</li>
+          <li>Количество точек до сна: {{ device.pointsBeforeSleep }}</li>
           <li>Deep Sleep: {{ device.sleepTimeSec }} с</li>
           <li>Экран при таймерном пробуждении: {{ device.screenOnTimerWake ? 'да' : 'нет' }}</li>
-          <li>Bluetooth при таймерном пробуждении: {{ device.bleOnTimerWake ? 'да' : 'нет' }}</li>
+          <li>Bluetooth во время бодрствования: всегда включён</li>
           <li>Засыпать при подключённом Bluetooth: {{ device.followSleepScheduleWhileBle ? 'да' : 'нет' }}</li>
           <li>Автоподключение: {{ reconnect ? 'да' : 'нет' }}</li>
         </ul>
@@ -140,10 +145,10 @@ function deleteProfile(): void {
 
     <section class="settings-section settings-grid">
       <h3>GPS и сон устройства</h3>
-      <label>Окно бодрствования / ожидания GPS, с<input v-model.number="device.awakeTimeSec" type="number" min="1" max="3600"></label>
+      <label>Ожидание первой GPS-точки, с<input v-model.number="device.awakeTimeSec" type="number" min="1" max="3600"></label>
+      <label>Количество точек до сна<input v-model.number="device.pointsBeforeSleep" type="number" min="1" max="1000"></label>
       <label>Время общего Deep Sleep, с<input v-model.number="device.sleepTimeSec" type="number" min="5" max="86400"></label>
       <label class="check"><input v-model="device.screenOnTimerWake" type="checkbox">Включать экран при таймерном пробуждении</label>
-      <label class="check"><input v-model="device.bleOnTimerWake" type="checkbox">Включать Bluetooth при таймерном пробуждении</label>
       <label class="check"><input v-model="device.followSleepScheduleWhileBle" type="checkbox">Засыпать при подключённом Bluetooth</label>
     </section>
 
@@ -160,7 +165,7 @@ function deleteProfile(): void {
       <p class="hint settings-wide">Нулевое значение отключает порог. Трекер продолжает записывать все координаты; эти параметры влияют только на отображение карты.</p>
     </section>
 
-    <p class="hint">GPS работает с частотой 1 Гц всё время бодрствования. Отдельной настройки частоты и минимального числа точек перед сном нет.</p>
+    <p class="hint">GPS работает с частотой 1 Гц всё время бодрствования. После первой точки трекер засыпает, когда запишет заданное количество точек; при отсутствии следующих точек действует аварийный тайм-аут 30 с.</p>
     <p v-if="pending" class="pending-settings">Настройки сохранены в телефоне и будут отправлены трекеру после подключения.</p>
       <button class="primary" type="submit">{{ connected ? 'Сохранить на трекер' : 'Сохранить и отправить при пробуждении' }}</button>
     </form>
