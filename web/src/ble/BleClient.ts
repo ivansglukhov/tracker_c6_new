@@ -44,37 +44,79 @@ export class BleClient {
   private autoReconnect = false
   private reconnectTimer?: number
   private connecting = false
+  private gattQueue: Promise<void> = Promise.resolve()
 
   onStatus?: (status: DeviceStatus) => void
   onPoint?: (point: LivePoint) => void
   onConnection?: (connected: boolean) => void
+  onConnectionState?: (message: string) => void
 
   async connect(): Promise<void> {
     if (!navigator.bluetooth) throw new Error('Web Bluetooth недоступен в этом браузере')
     this.autoReconnect = true
-    this.device = await navigator.bluetooth.requestDevice({
-      filters: [{ services: [UUID.service] }],
+    this.onConnectionState?.('Выберите C6 Tracker v2 в списке устройств')
+    const device = await navigator.bluetooth.requestDevice({
+      acceptAllDevices: true,
+      optionalServices: [UUID.service],
     })
-    this.device.addEventListener('gattserverdisconnected', this.handleDisconnect)
-    await this.connectKnownDevice()
+    this.useDevice(device)
+    try {
+      await this.connectKnownDevice()
+    } catch (error) {
+      this.scheduleReconnect()
+      throw error
+    }
+  }
+
+  async restoreKnownDevice(): Promise<boolean> {
+    if (!navigator.bluetooth?.getDevices) return false
+    const devices = await navigator.bluetooth.getDevices()
+    const known = devices.find((candidate) => candidate.name === 'C6 Tracker v2')
+      ?? devices.find((candidate) => candidate.name?.startsWith('C6 Tracker'))
+    if (!known) return false
+
+    this.autoReconnect = true
+    this.useDevice(known)
+    this.onConnectionState?.('Ожидание C6 Tracker v2…')
+    try {
+      await this.connectKnownDevice()
+      return true
+    } catch {
+      this.scheduleReconnect()
+      return false
+    }
   }
 
   private async connectKnownDevice(): Promise<void> {
-    if (!this.device || this.connecting || this.device.gatt?.connected) return
+    if (!this.device || this.connecting) return
+    if (this.device.gatt?.connected && this.control && this.event && this.bulk) return
     this.connecting = true
     try {
-    const server = await this.device.gatt?.connect()
-    if (!server) throw new Error('Не удалось открыть GATT')
-    const service = await server.getPrimaryService(UUID.service)
-    this.control = await service.getCharacteristic(UUID.control)
-    this.event = await service.getCharacteristic(UUID.event)
-    this.bulk = await service.getCharacteristic(UUID.bulk)
-    this.event.addEventListener('characteristicvaluechanged', this.handleEvent)
-    this.bulk.addEventListener('characteristicvaluechanged', this.handleBulk)
-    await this.event.startNotifications()
-    await this.bulk.startNotifications()
-    this.onConnection?.(true)
-    await this.getStatus()
+      this.clearCharacteristics()
+      this.onConnectionState?.(`Подключение к ${this.device.name || 'трекеру'}…`)
+      const gatt = this.device.gatt
+      if (!gatt) throw new Error('Устройство не предоставляет GATT')
+      const server = gatt.connected ? gatt : await gatt.connect()
+      const service = await server.getPrimaryService(UUID.service)
+      const control = await service.getCharacteristic(UUID.control)
+      const event = await service.getCharacteristic(UUID.event)
+      const bulk = await service.getCharacteristic(UUID.bulk)
+      event.addEventListener('characteristicvaluechanged', this.handleEvent)
+      bulk.addEventListener('characteristicvaluechanged', this.handleBulk)
+      await event.startNotifications()
+      await bulk.startNotifications()
+      this.control = control
+      this.event = event
+      this.bulk = bulk
+      this.onConnectionState?.('Проверка двоичного протокола…')
+      await this.getStatus()
+      this.onConnection?.(true)
+      this.onConnectionState?.(`Подключено: ${this.device.name || 'C6 Tracker v2'}`)
+    } catch (error) {
+      this.clearCharacteristics()
+      if (this.device.gatt?.connected) this.device.gatt.disconnect()
+      this.onConnection?.(false)
+      throw error
     } finally {
       this.connecting = false
     }
@@ -84,7 +126,9 @@ export class BleClient {
     this.autoReconnect = false
     if (this.reconnectTimer != null) window.clearTimeout(this.reconnectTimer)
     this.reconnectTimer = undefined
-    this.device?.gatt?.disconnect()
+    this.onConnectionState?.('Отключено пользователем')
+    if (this.device?.gatt?.connected) this.device.gatt.disconnect()
+    else this.handleDisconnect()
   }
 
   async getStatus(): Promise<void> {
@@ -158,7 +202,7 @@ export class BleClient {
         reject(new Error('Таймаут ответа трекера'))
       }, 5000)
       this.pending.set(requestId, { resolve, reject, timeout })
-      this.control!.writeValueWithoutResponse(writeBuffer.buffer).catch((error) => {
+      this.writeControl(writeBuffer).catch((error) => {
         window.clearTimeout(timeout)
         this.pending.delete(requestId)
         reject(error instanceof Error ? error : new Error(String(error)))
@@ -220,9 +264,8 @@ export class BleClient {
   }
 
   private handleDisconnect = (): void => {
-    this.control = undefined
-    this.event = undefined
-    this.bulk = undefined
+    this.clearCharacteristics()
+    this.gattQueue = Promise.resolve()
     for (const request of this.pending.values()) {
       window.clearTimeout(request.timeout)
       request.reject(new Error('Bluetooth отключён'))
@@ -230,9 +273,10 @@ export class BleClient {
     this.pending.clear()
     if (this.download) {
       this.download.reject(new Error('Передача прервана: Bluetooth отключён'))
-    this.download = undefined
+      this.download = undefined
     }
     this.onConnection?.(false)
+    if (this.autoReconnect) this.onConnectionState?.('Ожидание пробуждения трекера…')
     this.scheduleReconnect()
   }
 
@@ -243,8 +287,38 @@ export class BleClient {
       try {
         await this.connectKnownDevice()
       } catch {
+        this.onConnectionState?.('Трекер недоступен, следующая попытка через 3 с')
         this.scheduleReconnect()
       }
     }, 3000)
+  }
+
+  private useDevice(device: BluetoothDevice): void {
+    if (this.device && this.device !== device) {
+      this.device.removeEventListener('gattserverdisconnected', this.handleDisconnect)
+    }
+    this.device = device
+    this.device.removeEventListener('gattserverdisconnected', this.handleDisconnect)
+    this.device.addEventListener('gattserverdisconnected', this.handleDisconnect)
+  }
+
+  private clearCharacteristics(): void {
+    this.event?.removeEventListener('characteristicvaluechanged', this.handleEvent)
+    this.bulk?.removeEventListener('characteristicvaluechanged', this.handleBulk)
+    this.control = undefined
+    this.event = undefined
+    this.bulk = undefined
+  }
+
+  private writeControl(value: Uint8Array): Promise<void> {
+    const operation = this.gattQueue.then(async () => {
+      const control = this.control
+      if (!control) throw new Error('Трекер не подключён')
+      const payload = new Uint8Array(value)
+      if (control.writeValueWithResponse) await control.writeValueWithResponse(payload)
+      else await control.writeValue(payload)
+    })
+    this.gattQueue = operation.catch(() => undefined)
+    return operation
   }
 }

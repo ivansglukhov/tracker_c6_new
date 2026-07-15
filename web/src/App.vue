@@ -18,6 +18,7 @@ type Tab = 'now' | 'map' | 'tracks' | 'filters' | 'settings'
 const client = new BleClient()
 const connected = ref(false)
 const busy = ref(false)
+const connectionMessage = ref('Нет подключения')
 const tab = ref<Tab>('now')
 const status = ref<DeviceStatus>()
 const point = ref<LivePoint>()
@@ -40,6 +41,7 @@ client.onConnection = (value) => {
   connected.value = value
   if (value) void refreshAfterConnection()
 }
+client.onConnectionState = (value) => { connectionMessage.value = value }
 client.onStatus = (value) => { status.value = value }
 client.onPoint = (value) => { point.value = value }
 
@@ -50,6 +52,7 @@ async function connect(): Promise<void> {
     await client.connect()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason)
+    if (!connected.value) connectionMessage.value = 'Нет подключения'
   } finally { busy.value = false }
 }
 
@@ -155,12 +158,21 @@ onMounted(async () => {
     try { filterSettings.value = { ...filterSettings.value, ...JSON.parse(cached) as TrackFilterSettings } }
     catch { localStorage.removeItem('c6-track-filter') }
   }
+  void client.restoreKnownDevice().catch((reason) => {
+    error.value = reason instanceof Error ? reason.message : String(reason)
+  })
 })
 </script>
 
 <template>
   <main class="app">
-    <ConnectionHeader :connected="connected" :busy="busy" @connect="connect" @disconnect="client.disconnect()" />
+    <ConnectionHeader
+      :connected="connected"
+      :busy="busy"
+      :status-text="connectionMessage"
+      @connect="connect"
+      @disconnect="client.disconnect()"
+    />
     <nav class="tabs">
       <button v-for="item in tabs" :key="item.id" :class="{ active: tab === item.id }" @click="tab = item.id">{{ item.label }}</button>
     </nav>
