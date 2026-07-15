@@ -38,6 +38,7 @@ const BASEMAPS: Record<BasemapId, { label: string; url: string; options: L.TileL
 }
 
 const DISPLAY_KEY = 'c6-map-display-v2'
+const FOLLOW_COORDINATES_KEY = 'c6-map-follow-coordinates'
 const props = defineProps<{
   point?: LivePoint
   history: TrackPoint[]
@@ -68,6 +69,7 @@ const message = ref('Загрузите GPX или GeoJSON для ведения
 const selectedTrackId = ref(Number(localStorage.getItem('c6-map-track-id') || 0))
 const fallbackFullscreen = ref(false)
 const isFullscreen = ref(false)
+const followCoordinates = ref(localStorage.getItem(FOLLOW_COORDINATES_KEY) === '1')
 const display = reactive<MapDisplaySettings>(loadDisplaySettings())
 const savedBasemap = localStorage.getItem(BASEMAP_KEY)
 const basemapId = ref<BasemapId>(savedBasemap && savedBasemap in BASEMAPS ? savedBasemap as BasemapId : 'osm')
@@ -202,7 +204,7 @@ function applyLivePoint(point: LivePoint): void {
   const coordinate: L.LatLngTuple = [point.latitude, point.longitude]
   liveMarker?.remove()
   liveMarker = L.circleMarker(coordinate, { radius: 7, color: '#79dc7f', fillOpacity: 1 }).addTo(map)
-  if (!props.history.length) map.setView(coordinate, 15)
+  if (followCoordinates.value) map.panTo(coordinate, { animate: false })
   if (guidance.value?.type === 'points' && activePoint.value < guidance.value.points.length) {
     const target = guidance.value.points[activePoint.value]
     const remaining = distanceM({ latitude: point.latitude, longitude: point.longitude }, target)
@@ -280,6 +282,7 @@ watch(display, () => {
 }, { deep: true })
 watch(radiusM, (value) => localStorage.setItem('c6-guidance-radius', String(value)))
 watch(basemapId, applyBasemap)
+watch(followCoordinates, (value) => localStorage.setItem(FOLLOW_COORDINATES_KEY, value ? '1' : '0'))
 
 onMounted(async () => {
   await nextTick()
@@ -320,6 +323,7 @@ onBeforeUnmount(() => {
           <option v-for="(entry, id) in BASEMAPS" :key="id" :value="id">{{ entry.label }}</option>
         </select>
       </label>
+      <label class="check"><input v-model="followCoordinates" type="checkbox">Отслеживать координаты</label>
       <label class="check"><input v-model="display.line" type="checkbox">Линия</label>
       <label class="check"><input v-model="display.points" type="checkbox">Точки</label>
       <label class="check"><input v-model="display.labels" type="checkbox" :disabled="!display.points">Подписи рядом с точками</label>
