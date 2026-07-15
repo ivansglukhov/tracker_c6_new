@@ -42,6 +42,8 @@ bool buttonPressedPreviously = false;
 uint32_t interactiveDeadlineMs = 0;
 uint16_t cyclePointCount = 0;
 uint32_t lastStoredPointMs = 0;
+bool cycleTargetReached = false;
+bool gpsPreparedForSleep = false;
 bool nmeaDebugEnabled = false;
 uint16_t lastUsbFrame = 0;
 uint32_t lastUsbActivityMs = 0;
@@ -352,6 +354,18 @@ void serviceTransfer() {
   ++transfer.retries;
 }
 
+void prepareGpsForSleepOnce() {
+  if (gpsPreparedForSleep) return;
+  gps.prepareForDeepSleep();
+  gpsPreparedForSleep = true;
+}
+
+void finishPointCycleIfReady() {
+  if (cycleTargetReached || cyclePointCount < settings.pointsBeforeSleep) return;
+  cycleTargetReached = true;
+  prepareGpsForSleepOnce();
+}
+
 void enterDeepSleep() {
   if (digitalRead(board::WAKE_BUTTON) == LOW) return;
   if (usbHostConnected()) return;
@@ -360,7 +374,7 @@ void enterDeepSleep() {
                            status.batteryMillivolts, status.batteryPercent);
   if (displayEnabled) display.off();
   if (bleEnabled) ble.stop();
-  gps.prepareForDeepSleep();
+  prepareGpsForSleepOnce();
   SD.end();
   esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(settings.sleepTimeSec) * 1000000ULL);
   esp_deep_sleep_enable_gpio_wakeup(1ULL << board::WAKE_BUTTON, ESP_GPIO_WAKEUP_GPIO_LOW);
@@ -373,7 +387,7 @@ bool sleepAllowed() {
   if (interactiveWindowActive()) return false;
   if (ble.connected() && !settings.followSleepScheduleWhileBle) return false;
   if (cyclePointCount == 0) return millis() - bootMs >= settings.awakeTimeSec * 1000UL;
-  if (cyclePointCount >= settings.pointsBeforeSleep) return true;
+  if (cycleTargetReached) return true;
   return millis() - lastStoredPointMs >= POINT_STALL_TIMEOUT_MS;
 }
 }
@@ -412,7 +426,7 @@ void setup() {
 void loop() {
   handleButtonAndInteractiveWindow();
   GpsPoint point{};
-  if (gps.poll(point)) {
+  if (!cycleTargetReached && gps.poll(point)) {
     if (point.epoch) lastGpsEpoch = point.epoch;
     if (trackStore.append(point, wakeCycleId,
                           status.batteryMillivolts, status.batteryPercent)) {
@@ -422,6 +436,7 @@ void loop() {
       status.altitudeM = point.altitudeCm / 100;
       status.satellites = point.satellites;
       if (bleEnabled) ble.notifyPoint(trackStore.trackId(), trackStore.pointCount(), point);
+      finishPointCycleIfReady();
     }
     refreshStatus();
   }
@@ -437,6 +452,7 @@ void loop() {
 
   BleCommandFrame command{};
   while (bleEnabled && ble.pop(command)) handleCommand(command);
+  finishPointCycleIfReady();
   if (bleEnabled) serviceTransfer();
 
   if (millis() - lastStatusMs >= STATUS_PERIOD_MS) {
