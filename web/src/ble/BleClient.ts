@@ -53,7 +53,6 @@ export class BleClient {
 
   async connect(): Promise<void> {
     if (!navigator.bluetooth) throw new Error('Web Bluetooth недоступен в этом браузере')
-    this.autoReconnect = true
     this.onConnectionState?.('Выберите C6 Tracker v2 в списке устройств')
     const device = await navigator.bluetooth.requestDevice({
       acceptAllDevices: true,
@@ -69,13 +68,12 @@ export class BleClient {
   }
 
   async restoreKnownDevice(): Promise<boolean> {
-    if (!navigator.bluetooth?.getDevices) return false
+    if (!this.autoReconnect || !navigator.bluetooth?.getDevices) return false
     const devices = await navigator.bluetooth.getDevices()
     const known = devices.find((candidate) => candidate.name === 'C6 Tracker v2')
       ?? devices.find((candidate) => candidate.name?.startsWith('C6 Tracker'))
     if (!known) return false
 
-    this.autoReconnect = true
     this.useDevice(known)
     this.onConnectionState?.('Ожидание C6 Tracker v2…')
     try {
@@ -129,6 +127,16 @@ export class BleClient {
     this.onConnectionState?.('Отключено пользователем')
     if (this.device?.gatt?.connected) this.device.gatt.disconnect()
     else this.handleDisconnect()
+  }
+
+  setAutoReconnect(enabled: boolean): void {
+    this.autoReconnect = enabled
+    if (!enabled && this.reconnectTimer != null) {
+      window.clearTimeout(this.reconnectTimer)
+      this.reconnectTimer = undefined
+    } else if (enabled && this.device && !this.device.gatt?.connected) {
+      this.scheduleReconnect()
+    }
   }
 
   async getStatus(): Promise<void> {

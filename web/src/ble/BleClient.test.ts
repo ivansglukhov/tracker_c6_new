@@ -100,6 +100,7 @@ describe('BleClient Android connection flow', () => {
       getDevices: async () => [fixture.device],
     })
     const client = new BleClient()
+    client.setAutoReconnect(true)
 
     await expect(client.restoreKnownDevice()).resolves.toBe(true)
 
@@ -118,5 +119,16 @@ describe('BleClient Android connection flow', () => {
     expect(fixture.gatt.getPrimaryService).toHaveBeenCalledWith(UUID.service)
     expect(fixture.event.startNotifications).toHaveBeenCalledOnce()
     expect(fixture.bulk.startNotifications).toHaveBeenCalledOnce()
+  })
+
+  it('does not restore a known device when auto reconnect is disabled', async () => {
+    const fixture = trackerFixture()
+    const bluetooth = installBluetooth({ getDevices: async () => [fixture.device] })
+    const client = new BleClient()
+
+    await expect(client.restoreKnownDevice()).resolves.toBe(false)
+
+    expect(bluetooth.getDevices).not.toHaveBeenCalled()
+    expect(fixture.gatt.connect).not.toHaveBeenCalled()
   })
 })

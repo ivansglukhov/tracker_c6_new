@@ -53,9 +53,14 @@ h2 { margin-top: 0; }
 .metric-grid article { display: grid; min-width: 0; gap: 7px; }
 .metric-grid span, .hint { color: #9eaaa1; font-size: .9rem; }
 .metric-grid strong { font-size: 1.35rem; overflow-wrap: anywhere; }
-.settings { display: grid; gap: 14px; max-width: 620px; }
+.settings { display: grid; gap: 18px; max-width: 760px; }
 .settings label:not(.check), .map-tools label { display: grid; min-width: 0; gap: 6px; }
-input[type='number'], input[type='file'] {
+.settings-section { display: grid; min-width: 0; gap: 12px; padding-top: 16px; border-top: 1px solid #27382f; }
+.settings-section h3 { grid-column: 1 / -1; margin: 0; font-size: 1rem; }
+.settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.settings-wide { grid-column: 1 / -1; }
+.profile-row { display: grid; grid-template-columns: minmax(150px, 1fr) repeat(3, auto); gap: 8px; }
+input[type='number'], input[type='file'], select {
   width: 100%;
   min-height: 44px;
   padding: 8px;
@@ -66,6 +71,7 @@ input[type='number'], input[type='file'] {
 }
 .check { display: flex; min-height: 44px; align-items: center; gap: 10px; }
 .check input { width: 20px; height: 20px; flex: 0 0 auto; }
+.pending-settings { margin: 0; padding: 10px; color: #dce9a5; border: 1px solid #6c783e; border-radius: 8px; background: #171b0d; }
 .map-page { display: grid; gap: 10px; }
 .map-tools { display: flex; align-items: end; flex-wrap: wrap; gap: 10px; }
 .map-tools .hint { flex-basis: 100%; }
@@ -95,6 +101,11 @@ progress { width: 100%; accent-color: #79dc7f; }
   .metric-grid strong { font-size: clamp(1rem, 4.7vw, 1.25rem); }
   .settings { max-width: none; }
   .settings button[type='submit'] { width: 100%; }
+  .settings-grid { grid-template-columns: 1fr; }
+  .settings-wide { grid-column: auto; }
+  .profile-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .profile-row select { grid-column: 1 / -1; }
+  .profile-row button { width: 100%; padding-inline: 8px; }
   .map-tools { display: grid; grid-template-columns: minmax(0, 1fr) minmax(130px, .55fr); align-items: end; }
   .map-tools > input[type='file'], .map-tools > .hint { grid-column: 1 / -1; }
   .map-tools button { width: 100%; }
