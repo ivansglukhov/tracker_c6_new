@@ -1,0 +1,10 @@
+.pio/
+firmware/build/
+node_modules/
+dist/
+.vite/
+.tools/
+node-v*-win-x64.zip
+*.log
+web/*.rar
+obsidian-vault/.obsidian/workspace*.json
