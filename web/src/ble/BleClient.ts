@@ -1,3 +1,5 @@
+import { BleClient as NativeBleClient } from '@capacitor-community/bluetooth-le'
+import { Capacitor } from '@capacitor/core'
 import {
   Opcode,
   UUID,
@@ -34,7 +36,12 @@ interface DownloadState {
 }
 
 export class BleClient {
+  private readonly native = Capacitor.isNativePlatform()
   private device?: BluetoothDevice
+  private nativeDeviceId?: string
+  private nativeDeviceName?: string
+  private nativeConnected = false
+  private nativeInitialized = false
   private control?: BluetoothRemoteGATTCharacteristic
   private event?: BluetoothRemoteGATTCharacteristic
   private bulk?: BluetoothRemoteGATTCharacteristic
@@ -52,6 +59,17 @@ export class BleClient {
   onConnectionState?: (message: string) => void
 
   async connect(): Promise<void> {
+    if (this.native) {
+      await this.initializeNative()
+      this.onConnectionState?.('Выберите C6 Tracker v2 в списке устройств')
+      const device = await NativeBleClient.requestDevice({ services: [UUID.service] })
+      this.nativeDeviceId = device.deviceId
+      this.nativeDeviceName = device.name
+      localStorage.setItem('c6-native-device-id', device.deviceId)
+      if (device.name) localStorage.setItem('c6-native-device-name', device.name)
+      await this.connectKnownDevice()
+      return
+    }
     if (!navigator.bluetooth) throw new Error('Web Bluetooth недоступен в этом браузере')
     this.onConnectionState?.('Выберите C6 Tracker v2 в списке устройств')
     const device = await navigator.bluetooth.requestDevice({
@@ -68,6 +86,20 @@ export class BleClient {
   }
 
   async restoreKnownDevice(): Promise<boolean> {
+    if (this.native) {
+      if (!this.autoReconnect) return false
+      this.nativeDeviceId = localStorage.getItem('c6-native-device-id') || undefined
+      this.nativeDeviceName = localStorage.getItem('c6-native-device-name') || undefined
+      if (!this.nativeDeviceId) return false
+      try {
+        await this.initializeNative()
+        await this.connectKnownDevice()
+        return true
+      } catch {
+        this.scheduleReconnect()
+        return false
+      }
+    }
     if (!this.autoReconnect || !navigator.bluetooth?.getDevices) return false
     const devices = await navigator.bluetooth.getDevices()
     const known = devices.find((candidate) => candidate.name === 'C6 Tracker v2')
@@ -86,6 +118,7 @@ export class BleClient {
   }
 
   private async connectKnownDevice(): Promise<void> {
+    if (this.native) return this.connectKnownNativeDevice()
     if (!this.device || this.connecting) return
     if (this.device.gatt?.connected && this.control && this.event && this.bulk) return
     this.connecting = true
@@ -125,7 +158,9 @@ export class BleClient {
     if (this.reconnectTimer != null) window.clearTimeout(this.reconnectTimer)
     this.reconnectTimer = undefined
     this.onConnectionState?.('Отключено пользователем')
-    if (this.device?.gatt?.connected) this.device.gatt.disconnect()
+    if (this.native && this.nativeDeviceId) {
+      void NativeBleClient.disconnect(this.nativeDeviceId).finally(() => this.handleDisconnect())
+    } else if (this.device?.gatt?.connected) this.device.gatt.disconnect()
     else this.handleDisconnect()
   }
 
@@ -134,7 +169,11 @@ export class BleClient {
     if (!enabled && this.reconnectTimer != null) {
       window.clearTimeout(this.reconnectTimer)
       this.reconnectTimer = undefined
-    } else if (enabled && this.device && !this.device.gatt?.connected) {
+    } else if (
+      enabled &&
+      ((this.native && this.nativeDeviceId && !this.nativeConnected) ||
+        (this.device && !this.device.gatt?.connected))
+    ) {
       this.scheduleReconnect()
     }
   }
@@ -199,7 +238,7 @@ export class BleClient {
   }
 
   private request(opcode: number, payload?: Uint8Array): Promise<Uint8Array> {
-    if (!this.control) return Promise.reject(new Error('Трекер не подключён'))
+    if (!this.control && !this.nativeConnected) return Promise.reject(new Error('Трекер не подключён'))
     const requestId = this.nextRequestId++ & 0xffff || 1
     const frame = requestFrame(opcode, requestId, payload)
     const writeBuffer = new Uint8Array(frame.byteLength)
@@ -221,7 +260,11 @@ export class BleClient {
   private handleEvent = (event: Event): void => {
     const characteristic = event.target as BluetoothRemoteGATTCharacteristic
     const value = characteristic.value
-    if (!value || value.byteLength < 2) return
+    if (value) this.processEventValue(value)
+  }
+
+  private processEventValue(value: DataView): void {
+    if (value.byteLength < 2) return
     const opcode = value.getUint8(1)
     if (opcode === Opcode.statusEvent) this.onStatus?.(decodeStatus(value))
     else if (opcode === Opcode.livePointEvent) this.onPoint?.(decodeLivePoint(value))
@@ -272,6 +315,7 @@ export class BleClient {
   }
 
   private handleDisconnect = (): void => {
+    this.nativeConnected = false
     this.clearCharacteristics()
     this.gattQueue = Promise.resolve()
     for (const request of this.pending.values()) {
@@ -289,7 +333,7 @@ export class BleClient {
   }
 
   private scheduleReconnect(): void {
-    if (!this.autoReconnect || !this.device || this.reconnectTimer != null) return
+    if (!this.autoReconnect || (!this.device && !this.nativeDeviceId) || this.reconnectTimer != null) return
     this.reconnectTimer = window.setTimeout(async () => {
       this.reconnectTimer = undefined
       try {
@@ -320,6 +364,17 @@ export class BleClient {
 
   private writeControl(value: Uint8Array): Promise<void> {
     const operation = this.gattQueue.then(async () => {
+      if (this.native) {
+        if (!this.nativeDeviceId || !this.nativeConnected) throw new Error('Трекер не подключён')
+        const copy = new Uint8Array(value)
+        await NativeBleClient.write(
+          this.nativeDeviceId,
+          UUID.service,
+          UUID.control,
+          new DataView(copy.buffer),
+        )
+        return
+      }
       const control = this.control
       if (!control) throw new Error('Трекер не подключён')
       const payload = new Uint8Array(value)
@@ -328,5 +383,45 @@ export class BleClient {
     })
     this.gattQueue = operation.catch(() => undefined)
     return operation
+  }
+
+  private async initializeNative(): Promise<void> {
+    if (this.nativeInitialized) return
+    await NativeBleClient.initialize({ androidNeverForLocation: true })
+    this.nativeInitialized = true
+  }
+
+  private async connectKnownNativeDevice(): Promise<void> {
+    if (!this.nativeDeviceId || this.connecting || this.nativeConnected) return
+    this.connecting = true
+    try {
+      await this.initializeNative()
+      this.onConnectionState?.(`Подключение к ${this.nativeDeviceName || 'трекеру'}…`)
+      try { await NativeBleClient.disconnect(this.nativeDeviceId) } catch { /* Уже отключён. */ }
+      await NativeBleClient.connect(this.nativeDeviceId, () => this.handleDisconnect())
+      await NativeBleClient.startNotifications(
+        this.nativeDeviceId,
+        UUID.service,
+        UUID.event,
+        (value) => this.processEventValue(value),
+      )
+      await NativeBleClient.startNotifications(
+        this.nativeDeviceId,
+        UUID.service,
+        UUID.bulk,
+        (value) => { void this.processBulk(value) },
+      )
+      this.nativeConnected = true
+      this.onConnectionState?.('Проверка двоичного протокола…')
+      await this.getStatus()
+      this.onConnection?.(true)
+      this.onConnectionState?.(`Подключено: ${this.nativeDeviceName || 'C6 Tracker v2'}`)
+    } catch (error) {
+      this.nativeConnected = false
+      this.onConnection?.(false)
+      throw error
+    } finally {
+      this.connecting = false
+    }
   }
 }

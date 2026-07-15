@@ -75,6 +75,8 @@ void field(int x, int y, int width, int height, uint16_t color, uint8_t size, co
 
 bool SimpleDisplay::begin() {
   gpio_hold_dis(static_cast<gpio_num_t>(board::LCD_BL));
+  pinMode(board::LCD_BL, OUTPUT);
+  digitalWrite(board::LCD_BL, LOW);
   pinMode(board::SD_CS, OUTPUT);
   digitalWrite(board::SD_CS, HIGH);
   if (!lcd.begin()) return false;
@@ -155,6 +157,8 @@ void SimpleDisplay::off() {
   };
   lcdBus.batchOperation(sleepOperations, sizeof(sleepOperations));
   ledcWrite(board::LCD_BL, 0);
+  ledcDetach(board::LCD_BL);
+  pinMode(board::LCD_BL, OUTPUT);
   digitalWrite(board::LCD_BL, LOW);
   gpio_hold_en(static_cast<gpio_num_t>(board::LCD_BL));
   ready_ = false;

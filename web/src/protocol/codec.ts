@@ -184,6 +184,7 @@ export function decodeStatus(value: DataView): DeviceStatus {
     batteryPercent: value.getUint8(26),
     satellites: value.getUint8(27),
     wakeReason: value.getUint8(28),
+    batteryMillivolts: value.getUint16(30, true),
   }
 }
 

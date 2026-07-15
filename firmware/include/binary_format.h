@@ -11,7 +11,28 @@ constexpr uint16_t VERSION = 1;
 enum class RecordType : uint8_t {
   Point = 1,
   Footer = 2,
+  Battery = 3,
 };
+
+constexpr uint8_t BATTERY_MARKER = 0xB1;
+
+constexpr uint32_t packBattery(uint16_t millivolts, uint8_t percent) {
+  return static_cast<uint32_t>(millivolts) |
+         (static_cast<uint32_t>(percent) << 16U) |
+         (static_cast<uint32_t>(BATTERY_MARKER) << 24U);
+}
+
+constexpr bool hasBattery(uint32_t packed) {
+  return static_cast<uint8_t>(packed >> 24U) == BATTERY_MARKER;
+}
+
+constexpr uint16_t batteryMillivolts(uint32_t packed) {
+  return static_cast<uint16_t>(packed);
+}
+
+constexpr uint8_t batteryPercent(uint32_t packed) {
+  return static_cast<uint8_t>(packed >> 16U);
+}
 
 #pragma pack(push, 1)
 struct FileHeader {

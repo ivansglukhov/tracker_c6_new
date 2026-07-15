@@ -99,7 +99,8 @@ bool TrackStore::recoverTail() {
         candidate.magic != track_format::RECORD_MAGIC || candidate.version != track_format::VERSION ||
         candidate.crc32 != recordCrc(candidate) ||
         (candidate.type != static_cast<uint8_t>(track_format::RecordType::Point) &&
-         candidate.type != static_cast<uint8_t>(track_format::RecordType::Footer))) break;
+         candidate.type != static_cast<uint8_t>(track_format::RecordType::Footer) &&
+         candidate.type != static_cast<uint8_t>(track_format::RecordType::Battery))) break;
     validSize += sizeof(candidate);
   }
   file.close();
@@ -189,7 +190,8 @@ bool TrackStore::appendRecord(track_format::Record &record) {
   return ok;
 }
 
-bool TrackStore::append(const GpsPoint &point, uint32_t wakeCycleId) {
+bool TrackStore::append(const GpsPoint &point, uint32_t wakeCycleId,
+                        uint16_t batteryMillivolts, uint8_t batteryPercent) {
   if (!ready_) return false;
   uint32_t nextDistance = cumulativeDistanceM_;
   if (hasLastPoint_) {
@@ -212,6 +214,7 @@ bool TrackStore::append(const GpsPoint &point, uint32_t wakeCycleId) {
   record.flags = point.flags;
   record.wakeCycleId = wakeCycleId;
   record.cumulativeDistanceM = nextDistance;
+  record.reserved = track_format::packBattery(batteryMillivolts, batteryPercent);
 
   if (!appendRecord(record)) {
     writeError_ = true;
@@ -223,6 +226,23 @@ bool TrackStore::append(const GpsPoint &point, uint32_t wakeCycleId) {
   lastLongitudeE7_ = point.longitudeE7;
   hasLastPoint_ = true;
   return true;
+}
+
+bool TrackStore::appendBattery(uint32_t gpsEpoch, uint32_t wakeCycleId,
+                               uint16_t batteryMillivolts, uint8_t batteryPercent) {
+  if (!ready_) return false;
+  track_format::Record record{};
+  record.magic = track_format::RECORD_MAGIC;
+  record.version = track_format::VERSION;
+  record.type = static_cast<uint8_t>(track_format::RecordType::Battery);
+  record.sequence = pointCount_;
+  record.gpsEpoch = gpsEpoch;
+  record.wakeCycleId = wakeCycleId;
+  record.cumulativeDistanceM = cumulativeDistanceM_;
+  record.reserved = track_format::packBattery(batteryMillivolts, batteryPercent);
+  if (appendRecord(record)) return true;
+  writeError_ = true;
+  return false;
 }
 
 bool TrackStore::createNext(uint32_t createdEpoch) {

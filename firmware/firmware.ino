@@ -1,2 +1,1 @@
-// Arduino CLI entry point. setup() and loop() live in src/main.cpp.
-
+// Arduino CLI entry point. setup() and loop() are implemented in src/main.cpp.

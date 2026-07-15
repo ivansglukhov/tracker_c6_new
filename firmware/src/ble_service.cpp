@@ -93,6 +93,7 @@ void BleService::notifyStatus(const DeviceStatus &status) {
   payload.awakeTimeSec = status.awakeTimeSec;
   payload.interactiveRemainingSec = status.interactiveRemainingSec;
   payload.batteryPercent = status.batteryPercent;
+  payload.batteryMillivolts = status.batteryMillivolts;
   payload.satellites = status.satellites;
   payload.wakeReason = status.wakeReason;
   eventCharacteristic_->setValue(reinterpret_cast<uint8_t *>(&payload), sizeof(payload));

@@ -30,6 +30,7 @@ struct DeviceStatus {
   uint16_t awakeElapsedSec = 0;
   uint16_t awakeTimeSec = 0;
   uint16_t interactiveRemainingSec = 0;
+  uint16_t batteryMillivolts = 0;
   uint8_t batteryPercent = 0;
   uint8_t satellites = 0;
   uint8_t wakeReason = 0;

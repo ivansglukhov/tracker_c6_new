@@ -16,7 +16,10 @@ struct TrackFileInfo {
 class TrackStore {
  public:
   bool begin(uint16_t awakeTimeSec, uint32_t sleepTimeSec);
-  bool append(const GpsPoint &point, uint32_t wakeCycleId);
+  bool append(const GpsPoint &point, uint32_t wakeCycleId,
+              uint16_t batteryMillivolts, uint8_t batteryPercent);
+  bool appendBattery(uint32_t gpsEpoch, uint32_t wakeCycleId,
+                     uint16_t batteryMillivolts, uint8_t batteryPercent);
   bool createNext(uint32_t createdEpoch);
   void setSchedule(uint16_t awakeTimeSec, uint32_t sleepTimeSec) {
     awakeTimeSec_ = awakeTimeSec;

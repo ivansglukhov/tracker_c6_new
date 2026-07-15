@@ -34,6 +34,7 @@ describe('двоичный протокол BLE', () => {
     view.setUint8(26, 84)
     view.setUint8(27, 9)
     view.setUint8(28, 2)
+    view.setUint16(30, 3912, true)
 
     expect(decodeStatus(view)).toEqual({
       flags: 0x001d,
@@ -45,6 +46,7 @@ describe('двоичный протокол BLE', () => {
       awakeTimeSec: 120,
       interactiveRemainingSec: 13,
       batteryPercent: 84,
+      batteryMillivolts: 3912,
       satellites: 9,
       wakeReason: 2,
     })

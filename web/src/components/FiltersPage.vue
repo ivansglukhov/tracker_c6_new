@@ -12,7 +12,7 @@ watch(() => props.settings, (value) => Object.assign(form, value), { deep: true 
 <template>
   <form class="panel settings" @submit.prevent="emit('save', { ...form })">
     <h2>Фильтрация трека</h2>
-    <p class="hint">Фильтр применяется только к отображению и экспорту в браузере. Исходный файл и блоки IndexedDB не изменяются. Значение 0 отключает соответствующий порог.</p>
+    <p class="hint">Фильтр применяется только к отображению на карте. Исходный файл, экспорт и блоки IndexedDB не изменяются. Значение 0 отключает соответствующий порог.</p>
     <label>Минимум спутников<input v-model.number="form.minSatellites" type="number" min="0" max="64"></label>
     <label>Максимальный HDOP<input v-model.number="form.maxHdop" type="number" min="0" max="100" step="0.1"></label>
     <label>Максимальный скачок, м<input v-model.number="form.maxJumpM" type="number" min="0" max="100000"></label>

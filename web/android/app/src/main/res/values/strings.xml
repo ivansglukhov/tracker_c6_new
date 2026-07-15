@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">C6 Tracker</string>
+    <string name="title_activity_main">C6 Tracker</string>
+    <string name="package_name">ru.ivansglukhov.c6tracker</string>
+    <string name="custom_url_scheme">ru.ivansglukhov.c6tracker</string>
+</resources>

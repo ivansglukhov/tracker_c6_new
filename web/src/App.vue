@@ -3,20 +3,20 @@ import { computed, onMounted, ref } from 'vue'
 import { BleClient } from './ble/BleClient'
 import ConnectionHeader from './components/ConnectionHeader.vue'
 import FiltersPage from './components/FiltersPage.vue'
-import MapPage from './components/MapPage.vue'
+import MapTracksPage from './components/MapTracksPage.vue'
 import NowPage from './components/NowPage.vue'
 import SettingsPage from './components/SettingsPage.vue'
-import TracksPage from './components/TracksPage.vue'
 import { appendTrackBlock, listStoredTracks, mergeRemoteTracks, readTrackFile } from './storage/trackDatabase'
 import { parseC6t } from './track/c6t'
 import { trackToGeoJson, trackToGpx } from './track/export'
 import { filterTrack } from './track/filter'
-import type { DeviceSettings, DeviceStatus, LivePoint, RemoteTrackInfo, StoredTrack, TrackFilterSettings, TrackPoint } from './types'
+import type { BatterySample, DeviceSettings, DeviceStatus, LivePoint, RemoteTrackInfo, StoredTrack, TrackFilterSettings, TrackPoint } from './types'
 
-type Tab = 'now' | 'map' | 'tracks' | 'filters' | 'settings'
+type Tab = 'now' | 'map' | 'filters' | 'settings'
 
 const PENDING_SETTINGS_KEY = 'c6-pending-device-settings'
 const AUTO_RECONNECT_KEY = 'c6TrackerAutoReconnect'
+const BATTERY_HISTORY_KEY = 'c6-battery-history-v2'
 const DEFAULT_SETTINGS: DeviceSettings = {
   awakeTimeSec: 120,
   sleepTimeSec: 60,
@@ -47,6 +47,7 @@ const point = ref<LivePoint>()
 const error = ref('')
 const settings = ref<DeviceSettings>(restoredPendingSettings ?? DEFAULT_SETTINGS)
 const pendingSettings = ref<DeviceSettings | undefined>(restoredPendingSettings)
+const settingsConfirmed = ref(false)
 const autoReconnect = ref(localStorage.getItem(AUTO_RECONNECT_KEY) !== '0')
 const remoteTracks = ref<RemoteTrackInfo[]>([])
 const storedTracks = ref<StoredTrack[]>([])
@@ -54,6 +55,7 @@ const busyTrackId = ref<number>()
 const syncProgress = ref(0)
 const history = ref<TrackPoint[]>([])
 const filterSettings = ref<TrackFilterSettings>({ minSatellites: 0, maxHdop: 0, maxJumpM: 0 })
+const batterySamples = ref<BatterySample[]>(loadBatteryHistory())
 
 client.setAutoReconnect(autoReconnect.value)
 
@@ -62,7 +64,10 @@ client.onConnection = (value) => {
   if (value) void refreshAfterConnection()
 }
 client.onConnectionState = (value) => { connectionMessage.value = value }
-client.onStatus = (value) => { status.value = value }
+client.onStatus = (value) => {
+  status.value = value
+  recordLiveBattery(value)
+}
 client.onPoint = (value) => { point.value = value }
 
 async function connect(): Promise<void> {
@@ -85,6 +90,7 @@ async function refreshAfterConnection(): Promise<void> {
       pendingSettings.value = undefined
     }
     settings.value = await client.getSettings()
+    settingsConfirmed.value = true
     await refreshTracks()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason)
@@ -102,6 +108,7 @@ async function saveSettings(
   localStorage.setItem(AUTO_RECONNECT_KEY, reconnect ? '1' : '0')
   client.setAutoReconnect(reconnect)
   settings.value = value
+  settingsConfirmed.value = false
   pendingSettings.value = value
   localStorage.setItem(PENDING_SETTINGS_KEY, JSON.stringify(value))
   if (!connected.value) return
@@ -109,6 +116,7 @@ async function saveSettings(
   try {
     await client.saveSettings(value)
     settings.value = await client.getSettings()
+    settingsConfirmed.value = true
     pendingSettings.value = undefined
     localStorage.removeItem(PENDING_SETTINGS_KEY)
   } catch (reason) { error.value = reason instanceof Error ? reason.message : String(reason) }
@@ -159,12 +167,18 @@ async function syncTrack(info: RemoteTrackInfo): Promise<void> {
 }
 
 async function viewTrack(id: number): Promise<void> {
+  const remote = remoteTracks.value.find((track) => track.trackId === id)
+  busyTrackId.value = id
+  error.value = ''
   try {
-    history.value = parseC6t(await readTrackFile(id)).points
+    if (remote) await downloadTrackSnapshot(remote)
+    const parsed = parseC6t(await readTrackFile(id))
+    history.value = parsed.points
+    mergeBatteryHistory(parsed.batterySamples.map((sample) => ({ ...sample, trackId: id })))
     tab.value = 'map'
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : String(reason)
-  }
+  } finally { busyTrackId.value = undefined }
 }
 
 async function exportTrackFile(info: RemoteTrackInfo, format: 'gpx' | 'geojson'): Promise<void> {
@@ -172,7 +186,9 @@ async function exportTrackFile(info: RemoteTrackInfo, format: 'gpx' | 'geojson')
   error.value = ''
   try {
     await downloadTrackSnapshot(info)
-    const points = filterTrack(parseC6t(await readTrackFile(info.trackId)).points, filterSettings.value)
+    const parsed = parseC6t(await readTrackFile(info.trackId))
+    const points = parsed.points
+    mergeBatteryHistory(parsed.batterySamples.map((sample) => ({ ...sample, trackId: info.trackId })))
     const basename = `track_${String(info.trackId).padStart(6, '0')}`
     const content = format === 'gpx' ? trackToGpx(points, basename) : trackToGeoJson(points, info.trackId)
     const blob = new Blob([content], { type: format === 'gpx' ? 'application/gpx+xml' : 'application/geo+json' })
@@ -198,8 +214,7 @@ function saveFilter(value: TrackFilterSettings): void {
 
 const tabs: { id: Tab; label: string }[] = [
   { id: 'now', label: 'Сейчас' },
-  { id: 'map', label: 'Карта' },
-  { id: 'tracks', label: 'Треки' },
+  { id: 'map', label: 'Карта и треки' },
   { id: 'filters', label: 'Фильтры' },
   { id: 'settings', label: 'Настройки' },
 ]
@@ -207,8 +222,62 @@ const tabs: { id: Tab; label: string }[] = [
 const trackId = computed(() => status.value?.trackId)
 const filteredHistory = computed(() => filterTrack(history.value, filterSettings.value))
 
+function loadBatteryHistory(): BatterySample[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(BATTERY_HISTORY_KEY) || '[]') as BatterySample[]
+    return Array.isArray(value) ? value.slice(-1000) : []
+  } catch {
+    localStorage.removeItem(BATTERY_HISTORY_KEY)
+    return []
+  }
+}
+
+function mergeBatteryHistory(samples: BatterySample[]): void {
+  const merged = new Map<string, BatterySample>()
+  for (const sample of [...batterySamples.value, ...samples]) {
+    const key = sample.trackId != null && sample.wakeCycleId
+      ? `track:${sample.trackId}:${sample.wakeCycleId}`
+      : `live:${Math.floor((sample.capturedAt ?? Date.now()) / 60_000)}`
+    merged.set(key, sample)
+  }
+  batterySamples.value = [...merged.values()]
+    .sort((a, b) => (a.gpsEpoch * 1000 || a.capturedAt || 0) - (b.gpsEpoch * 1000 || b.capturedAt || 0))
+    .slice(-1000)
+  localStorage.setItem(BATTERY_HISTORY_KEY, JSON.stringify(batterySamples.value))
+}
+
+function recordLiveBattery(value: DeviceStatus): void {
+  if (!value.batteryMillivolts && !value.batteryPercent) return
+  const last = batterySamples.value.at(-1)
+  const now = Date.now()
+  if (last?.capturedAt && now - last.capturedAt < 60_000 &&
+      last.batteryPercent === value.batteryPercent &&
+      Math.abs(last.batteryMillivolts - value.batteryMillivolts) < 10) return
+  mergeBatteryHistory([{
+    gpsEpoch: 0,
+    wakeCycleId: 0,
+    batteryMillivolts: value.batteryMillivolts,
+    batteryPercent: value.batteryPercent,
+    trackId: value.trackId,
+    capturedAt: now,
+  }])
+}
+
+async function loadStoredBatteryHistory(): Promise<void> {
+  const samples: BatterySample[] = []
+  for (const track of storedTracks.value) {
+    if (track.bytesReceived !== track.fileSize || track.fileSize < 40) continue
+    try {
+      const parsed = parseC6t(await readTrackFile(track.trackId))
+      samples.push(...parsed.batterySamples.map((sample) => ({ ...sample, trackId: track.trackId })))
+    } catch { /* Ошибка конкретного файла будет показана при его открытии. */ }
+  }
+  if (samples.length) mergeBatteryHistory(samples)
+}
+
 onMounted(async () => {
   storedTracks.value = await listStoredTracks()
+  await loadStoredBatteryHistory()
   const cached = localStorage.getItem('c6-track-filter')
   if (cached) {
     try { filterSettings.value = { ...filterSettings.value, ...JSON.parse(cached) as TrackFilterSettings } }
@@ -234,9 +303,10 @@ onMounted(async () => {
     </nav>
     <p v-if="error" class="error">{{ error }}</p>
     <NowPage v-if="tab === 'now'" :status="status" :point="point" />
-    <MapPage v-else-if="tab === 'map'" :point="point" :history="filteredHistory" />
-    <TracksPage
-      v-else-if="tab === 'tracks'"
+    <MapTracksPage
+      v-else-if="tab === 'map'"
+      :point="point"
+      :history="filteredHistory"
       :connected="connected"
       :track-id="trackId"
       :point-count="status?.pointCount"
@@ -258,6 +328,8 @@ onMounted(async () => {
       :auto-reconnect="autoReconnect"
       :connected="connected"
       :pending="pendingSettings != null"
+      :confirmed="settingsConfirmed"
+      :battery-samples="batterySamples"
       @save="saveSettings"
     />
   </main>

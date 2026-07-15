@@ -105,7 +105,7 @@ struct StatusPayload {
   uint8_t satellites;
   uint8_t wakeReason;
   uint8_t reserved;
-  uint16_t reserved2;
+  uint16_t batteryMillivolts;
 };
 
 struct LivePointPayload {

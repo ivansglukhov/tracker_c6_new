@@ -54,6 +54,12 @@ struct TransferState {
 TransferState transfer;
 uint16_t nextTransferSession = 1;
 uint32_t lastGpsEpoch = 0;
+float filteredBatteryMillivolts = 0.0F;
+
+struct BatteryReading {
+  uint16_t millivolts = 0;
+  uint8_t percent = 0;
+};
 
 size_t packBits(const uint8_t *input, size_t length, uint8_t *output, size_t capacity) {
   size_t source = 0;
@@ -126,13 +132,22 @@ void handleButtonAndInteractiveWindow() {
   }
 }
 
-uint8_t batteryPercent() {
-  analogReadResolution(12);
-  const uint16_t raw = analogRead(board::BATTERY_ADC);
-  const float voltage = raw * (3.3F / 4095.0F) * board::BATTERY_SCALE;
+BatteryReading readBattery() {
+  uint32_t pinMillivolts = 0;
+  for (uint8_t index = 0; index < 8; ++index) {
+    pinMillivolts += analogReadMilliVolts(board::BATTERY_ADC);
+  }
+  const float measuredMillivolts = (pinMillivolts / 8.0F) * board::BATTERY_SCALE;
+  filteredBatteryMillivolts = filteredBatteryMillivolts < 1.0F
+      ? measuredMillivolts
+      : filteredBatteryMillivolts * 0.85F + measuredMillivolts * 0.15F;
+  const float voltage = filteredBatteryMillivolts / 1000.0F;
   const float normalized = (voltage - board::BATTERY_EMPTY_V) /
                            (board::BATTERY_FULL_V - board::BATTERY_EMPTY_V);
-  return static_cast<uint8_t>(constrain(lroundf(normalized * 100.0F), 0L, 100L));
+  BatteryReading reading{};
+  reading.millivolts = static_cast<uint16_t>(constrain(lroundf(filteredBatteryMillivolts), 0L, 65535L));
+  reading.percent = static_cast<uint8_t>(constrain(lroundf(normalized * 100.0F), 0L, 100L));
+  return reading;
 }
 
 void refreshStatus() {
@@ -142,7 +157,9 @@ void refreshStatus() {
   const uint32_t waitSeconds = (millis() - bootMs) / 1000;
   status.awakeElapsedSec = static_cast<uint16_t>(waitSeconds > 65535 ? 65535 : waitSeconds);
   status.awakeTimeSec = settings.awakeTimeSec;
-  status.batteryPercent = batteryPercent();
+  const BatteryReading battery = readBattery();
+  status.batteryMillivolts = battery.millivolts;
+  status.batteryPercent = battery.percent;
   status.sdReady = trackStore.ready();
   status.sdError = trackStore.writeError();
   status.bleConnected = ble.connected();
@@ -317,6 +334,9 @@ void serviceTransfer() {
 
 void enterDeepSleep() {
   if (digitalRead(board::WAKE_BUTTON) == LOW) return;
+  refreshStatus();
+  trackStore.appendBattery(lastGpsEpoch, wakeCycleId,
+                           status.batteryMillivolts, status.batteryPercent);
   if (displayEnabled) display.off();
   if (bleEnabled) ble.stop();
   gps.prepareForDeepSleep();
@@ -343,6 +363,8 @@ void setup() {
   if (wakeCycleId == 0) ++wakeCycleId;
 
   pinMode(board::WAKE_BUTTON, INPUT);
+  analogReadResolution(12);
+  analogSetPinAttenuation(board::BATTERY_ADC, ADC_11db);
   const esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
   interactiveWake = wakeCause != ESP_SLEEP_WAKEUP_TIMER;
   status.wakeReason = wakeCause == ESP_SLEEP_WAKEUP_TIMER ? 1 :
@@ -370,7 +392,8 @@ void loop() {
   GpsPoint point{};
   if (gps.poll(point)) {
     if (point.epoch) lastGpsEpoch = point.epoch;
-    if (trackStore.append(point, wakeCycleId)) {
+    if (trackStore.append(point, wakeCycleId,
+                          status.batteryMillivolts, status.batteryPercent)) {
       status.gpsCoordinate = true;
       status.altitudeM = point.altitudeCm / 100;
       status.satellites = point.satellites;

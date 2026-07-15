@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { reactive, ref, watch } from 'vue'
-import type { DeviceSettings, TrackFilterSettings } from '../types'
+import BatteryChart from './BatteryChart.vue'
+import type { BatterySample, DeviceSettings, TrackFilterSettings } from '../types'
 
 interface SettingsProfile {
   device: DeviceSettings
@@ -33,6 +34,8 @@ const props = defineProps<{
   autoReconnect: boolean
   connected: boolean
   pending: boolean
+  confirmed: boolean
+  batterySamples: BatterySample[]
 }>()
 const emit = defineEmits<{
   save: [settings: DeviceSettings, filters: TrackFilterSettings, autoReconnect: boolean]
@@ -101,8 +104,22 @@ function deleteProfile(): void {
 </script>
 
 <template>
-  <form class="panel settings" @submit.prevent="submit">
-    <h2>Настройки</h2>
+  <section class="settings-page">
+    <BatteryChart :samples="batterySamples" />
+    <form class="panel settings" @submit.prevent="submit">
+      <h2>Настройки</h2>
+
+      <section class="settings-summary">
+        <h3>{{ confirmed && !pending ? 'Настройки, подтверждённые трекером' : 'Действующие настройки на телефоне' }}</h3>
+        <ul>
+          <li>Бодрствование: {{ device.awakeTimeSec }} с</li>
+          <li>Deep Sleep: {{ device.sleepTimeSec }} с</li>
+          <li>Экран при таймерном пробуждении: {{ device.screenOnTimerWake ? 'да' : 'нет' }}</li>
+          <li>Bluetooth при таймерном пробуждении: {{ device.bleOnTimerWake ? 'да' : 'нет' }}</li>
+          <li>Засыпать при подключённом Bluetooth: {{ device.followSleepScheduleWhileBle ? 'да' : 'нет' }}</li>
+          <li>Автоподключение: {{ reconnect ? 'да' : 'нет' }}</li>
+        </ul>
+      </section>
 
     <section class="settings-section">
       <h3>Профили режима</h3>
@@ -127,7 +144,7 @@ function deleteProfile(): void {
       <label>Время общего Deep Sleep, с<input v-model.number="device.sleepTimeSec" type="number" min="5" max="86400"></label>
       <label class="check"><input v-model="device.screenOnTimerWake" type="checkbox">Включать экран при таймерном пробуждении</label>
       <label class="check"><input v-model="device.bleOnTimerWake" type="checkbox">Включать Bluetooth при таймерном пробуждении</label>
-      <label class="check"><input v-model="device.followSleepScheduleWhileBle" type="checkbox">Учитывать график сна для GPS при BT</label>
+      <label class="check"><input v-model="device.followSleepScheduleWhileBle" type="checkbox">Засыпать при подключённом Bluetooth</label>
     </section>
 
     <section class="settings-section settings-grid">
@@ -140,11 +157,12 @@ function deleteProfile(): void {
       <label>Минимум спутников<input v-model.number="filters.minSatellites" type="number" min="0" max="64"></label>
       <label>Максимальный HDOP<input v-model.number="filters.maxHdop" type="number" min="0" max="100" step="0.1"></label>
       <label>Максимальный скачок, м<input v-model.number="filters.maxJumpM" type="number" min="0" max="100000"></label>
-      <p class="hint settings-wide">Нулевое значение отключает порог. Трекер продолжает записывать все координаты; эти параметры влияют только на карту и экспорт в телефоне.</p>
+      <p class="hint settings-wide">Нулевое значение отключает порог. Трекер продолжает записывать все координаты; эти параметры влияют только на отображение карты.</p>
     </section>
 
     <p class="hint">GPS работает с частотой 1 Гц всё время бодрствования. Отдельной настройки частоты и минимального числа точек перед сном нет.</p>
     <p v-if="pending" class="pending-settings">Настройки сохранены в телефоне и будут отправлены трекеру после подключения.</p>
-    <button class="primary" type="submit">{{ connected ? 'Сохранить на трекер' : 'Сохранить и отправить при пробуждении' }}</button>
-  </form>
+      <button class="primary" type="submit">{{ connected ? 'Сохранить на трекер' : 'Сохранить и отправить при пробуждении' }}</button>
+    </form>
+  </section>
 </template>

@@ -1,11 +1,12 @@
 import { crc32 } from '../protocol/crc32'
-import type { TrackPoint } from '../types'
+import type { BatterySample, TrackPoint } from '../types'
 
 const FILE_MAGIC = 0x32543643
 const RECORD_MAGIC = 0xc62a
 const VERSION = 1
 const HEADER_SIZE = 40
 const RECORD_SIZE = 48
+const BATTERY_MARKER = 0xb1
 
 export interface ParsedTrack {
   trackId: number
@@ -14,7 +15,16 @@ export interface ParsedTrack {
   awakeTimeSec: number
   sleepTimeSec: number
   points: TrackPoint[]
+  batterySamples: BatterySample[]
   closed: boolean
+}
+
+function batteryData(packed: number): Pick<TrackPoint, 'batteryMillivolts' | 'batteryPercent'> {
+  if ((packed >>> 24) !== BATTERY_MARKER) return {}
+  return {
+    batteryMillivolts: packed & 0xffff,
+    batteryPercent: (packed >>> 16) & 0xff,
+  }
 }
 
 function checkedCrc(bytes: Uint8Array, bodyLength: number, expected: number, description: string): void {
@@ -30,6 +40,7 @@ export function parseC6t(bytes: Uint8Array): ParsedTrack {
   if ((bytes.byteLength - HEADER_SIZE) % RECORD_SIZE !== 0) throw new Error('Неполная запись в хвосте файла')
 
   const points: TrackPoint[] = []
+  const batterySamples: BatterySample[] = []
   let closed = false
   for (let offset = HEADER_SIZE; offset < bytes.byteLength; offset += RECORD_SIZE) {
     const recordBytes = bytes.subarray(offset, offset + RECORD_SIZE)
@@ -43,7 +54,20 @@ export function parseC6t(bytes: Uint8Array): ParsedTrack {
       closed = true
       continue
     }
+    if (type === 3) {
+      const battery = batteryData(record.getUint32(40, true))
+      if (battery.batteryMillivolts != null && battery.batteryPercent != null) {
+        batterySamples.push({
+          gpsEpoch: record.getUint32(8, true),
+          wakeCycleId: record.getUint32(32, true),
+          batteryMillivolts: battery.batteryMillivolts,
+          batteryPercent: battery.batteryPercent,
+        })
+      }
+      continue
+    }
     if (type !== 1) throw new Error(`Неизвестный тип записи ${type}`)
+    const battery = batteryData(record.getUint32(40, true))
     points.push({
       sequence: record.getUint32(4, true),
       gpsEpoch: record.getUint32(8, true),
@@ -57,7 +81,18 @@ export function parseC6t(bytes: Uint8Array): ParsedTrack {
       flags: record.getUint8(31),
       wakeCycleId: record.getUint32(32, true),
       cumulativeDistanceM: record.getUint32(36, true),
+      ...battery,
     })
+  }
+
+  const batteryByWake = new Map(batterySamples.map((sample) => [sample.wakeCycleId, sample]))
+  for (const point of points) {
+    if (point.batteryPercent != null) continue
+    const battery = batteryByWake.get(point.wakeCycleId)
+    if (battery) {
+      point.batteryMillivolts = battery.batteryMillivolts
+      point.batteryPercent = battery.batteryPercent
+    }
   }
 
   return {
@@ -67,6 +102,7 @@ export function parseC6t(bytes: Uint8Array): ParsedTrack {
     awakeTimeSec: header.getUint32(24, true),
     sleepTimeSec: header.getUint32(28, true),
     points,
+    batterySamples,
     closed,
   }
 }

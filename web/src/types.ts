@@ -7,6 +7,7 @@ export interface DeviceStatus {
   awakeElapsedSec: number
   awakeTimeSec: number
   interactiveRemainingSec: number
+  batteryMillivolts: number
   batteryPercent: number
   satellites: number
   wakeReason: number
@@ -68,6 +69,17 @@ export interface TrackPoint {
   flags: number
   wakeCycleId: number
   cumulativeDistanceM: number
+  batteryMillivolts?: number
+  batteryPercent?: number
+}
+
+export interface BatterySample {
+  gpsEpoch: number
+  wakeCycleId: number
+  batteryMillivolts: number
+  batteryPercent: number
+  trackId?: number
+  capturedAt?: number
 }
 
 export interface TrackFilterSettings {
